@@ -1,246 +1,336 @@
 <!doctype html>
 <html lang="ja">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>ERP System</title>
-  <link rel="stylesheet" href="style.css" />
-  <!-- Icons + fonts -->
-  <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=Noto+Sans+JP:wght@400;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"/>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>東京精密発條株式会社システム</title>
+
+  <!-- Icons & Fonts -->
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="style.css">
+
+  <!-- Libs (defer agar first paint cepat) -->
+  <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
 </head>
-<body class="theme-light">
-  <!-- Topbar (disembunyikan saat belum login) -->
-  <header id="topBar" class="topbar hidden">
-    <div class="left">
-      <div class="brand">ERP System</div>
-      <nav class="nav">
-        <button id="btnToDash" class="navbtn">Dashboard</button>
-        <button id="btnToSales" class="navbtn">Sales</button>
-        <button id="btnToPlan" class="navbtn">Plans</button>
-        <button id="btnToShip" class="navbtn">Shipments</button>
-        <button id="btnToFinPage" class="navbtn">Finished</button>
-        <button id="btnToInvPage" class="navbtn">Inventory</button>
-        <button id="btnToInvoice" class="navbtn">Invoice</button>
-        <button id="btnToAnalytics" class="navbtn">Analytics</button>
-      </nav>
+<body>
+
+  <!-- ======= TOP BAR ======= -->
+  <div class="nav" id="topBar">
+    <div class="nav-left">
+      <img class="logo" src="data:image/svg+xml,%3Csvg ... %3C/svg%3E" alt="logo">
+      <div class="brand">TSH</div>
+      <div id="weatherWrap" class="row hidden">
+        <i class="fa-regular fa-sun"></i>
+        <span id="wxTemp">—</span>
+        <span class="s muted">/</span>
+        <span id="wxWind">—</span>
+        <span class="s muted">·</span>
+        <span id="wxPlace" class="s">—</span>
+      </div>
+      <span class="s" id="userInfo"></span>
     </div>
-    <!-- PATCH: topbar addon -->
-<div id="weatherWrap" class="hidden" style="display:flex;gap:12px;align-items:center">
-  <span id="wxPlace" class="s muted"></span>
-  <span id="wxTemp" class="s muted"></span>
-  <span id="wxWind" class="s muted"></span>
-</div>
 
-<div id="ddSetting" class="hidden" style="display:flex;gap:8px;margin-left:12px">
-  <button class="btn" id="btnTheme" title="Dark/Light">Theme</button>
-  <button class="btn" id="btnAddUser" title="Add Member (Admin only)">
-    <i class="fa-solid fa-user-plus"></i><span> Add Member</span>
-  </button>
-</div>
+    <!-- NOTE: tombol menu dipindahkan ke sisi kanan -->
+    <div class="nav-right">
+      <button class="btn" id="btnToDash"><i class="fa-solid fa-gauge"></i> ダッシュボード</button>
+      <button class="btn" id="btnToSales"><i class="fa-regular fa-clipboard"></i> 受注</button>
+      <button class="btn" id="btnToPlan"><i class="fa-solid fa-list-check"></i> 生産計画</button>
+      <button class="btn" id="btnToShip"><i class="fa-solid fa-truck"></i> 出荷予定</button>
+      <button class="btn" id="btnToFinPage"><i class="fa-regular fa-circle-check"></i> 完成品一覧</button>
+      <button class="btn" id="btnToInvPage"><i class="fa-solid fa-boxes-stacked"></i> 在庫</button>
+      <button class="btn" id="btnToInvoice"><i class="fa-regular fa-file-lines"></i> 請求書</button>
+      <button class="btn" id="btnToAnalytics"><i class="fa-solid fa-chart-line"></i> 分析チャート</button>
 
-    <div class="right">
-      <span id="userInfo" class="muted"></span>
-      <button id="btnLogout" class="btn ghost"><i class="fa-solid fa-right-from-bracket"></i> ログアウト</button>
+      <!-- Sistem (admin only) -->
+      <div class="btn" id="ddSetting">
+        <i class="fa-solid fa-gear"></i> システム
+        <div class="row">
+          <div class="chip" id="btnStationQR"><i class="fa-solid fa-qrcode"></i> 工程QR</div>
+          <div class="chip hidden" id="btnAddMember"><i class="fa-solid fa-user-plus"></i> Add Member Baru</div>
+        </div>
+      </div>
+
+      <button class="btn ghost" id="btnLogout"><i class="fa-solid fa-right-from-bracket"></i> ログアウト</button>
     </div>
-  </header>
+  </div>
 
-  <!-- Auth -->
-  <main id="authView" class="center-wrap">
-    <section class="card auth">
-      <h3><i class="fa-solid fa-right-to-bracket"></i> ログイン</h3>
-      <label>ユーザー名</label>
-      <input id="inUser" placeholder="admin" />
-      <label>パスワード</label>
-      <input id="inPass" type="password" placeholder="••••" />
-      <button id="btnLogin" class="btn primary">ログイン</button>
-      <p class="hint">※ ログイン後にメニューが表示されます。</p>
-      <div id="apiWarn" class="warn hidden"></div>
+  <div class="container">
+    <!-- ======= LOGIN ======= -->
+    <section id="authView" class="card card-tight">
+      <h3 class="center"><i class="fa-solid fa-right-to-bracket"></i> ログイン</h3>
+      <div class="grid grid-auth">
+        <div class="form-item">
+          <label>ユーザー名</label>
+          <input id="inUser" class="input input-lg" placeholder="ユーザー名" autocomplete="username" required>
+        </div>
+        <div class="form-item">
+          <label>パスワード</label>
+          <input id="inPass" type="password" class="input input-lg" placeholder="パスワード" autocomplete="current-password" required>
+        </div>
+        <div class="row-end">
+          <button id="btnLogin" class="btn primary">ログイン</button>
+        </div>
+      </div>
     </section>
-  </main>
 
-  <!-- Dashboard -->
-  <section id="pageDash" class="page hidden">
-    <div class="page-head">
-      <h2>Dashboard</h2>
-      <div class="tools">
-        <input id="searchQ" class="search" placeholder="Search…" />
-        <button id="btnExportOrders" class="btn ghost"><i class="fa-regular fa-file-excel"></i> Export</button>
-      </div>
-    </div>
-    <div class="grid grid-2">
+    <!-- ======= DASHBOARD ======= -->
+    <section id="pageDash" class="hidden">
       <div class="card">
-        <table class="gridtable">
-          <thead>
-            <tr>
-              <th>PO/顧客</th><th>品名</th><th>品番</th><th>図番</th>
-              <th>状態</th><th>工程</th><th>更新</th><th>更新者</th><th>操作</th>
-            </tr>
-          </thead>
-          <tbody id="tbOrders"></tbody>
-        </table>
+        <div class="row-between">
+          <h3 style="margin:0">生産計画</h3>
+          <div class="row">
+            <input id="searchQ" class="input" placeholder="検索…">
+            <button class="btn" id="btnExportOrders"><i class="fa-regular fa-file-excel"></i> Export</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>注番/得意先</th><th>品名</th><th>品番</th><th>図番</th>
+                <th>状態</th><th>工程</th><th>更新</th><th>更新者</th><th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="tbOrders"></tbody>
+          </table>
+        </div>
       </div>
+
+      <div class="grid grid-ship-panels" style="margin-top:.6rem">
+        <div class="card sub">
+          <h4 style="margin:.2rem 0 .6rem">本日出荷</h4>
+          <div id="shipToday" class="s muted">—</div>
+        </div>
+        <div class="card sub">
+          <h4 style="margin:.2rem 0 .6rem">出荷予定</h4>
+          <div id="shipPlan" class="s muted">—</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======= PAGES LAIN (tidak diubah) ======= -->
+    <section id="pageSales" class="hidden">
       <div class="card">
-        <h4 class="muted">進捗サマリ</h4>
-        <canvas id="chartDash" height="220"></canvas>
+        <div class="row-between">
+          <h3 style="margin:0">受注</h3>
+          <div class="row">
+            <input id="salesSearch" class="input" placeholder="検索…">
+            <button class="btn" id="btnSalesCreate"><i class="fa-solid fa-plus"></i> 作成</button>
+            <button class="btn" id="btnSalesImport"><i class="fa-solid fa-upload"></i> Import</button>
+            <button class="btn" id="btnSalesExport"><i class="fa-regular fa-file-excel"></i> Export</button>
+            <button class="btn" id="btnSalesPrint"><i class="fa-solid fa-print"></i> Print</button>
+            <button class="btn" id="btnSalesTpl"><i class="fa-regular fa-file"></i> 雛形CSV</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table"><thead id="thSales"></thead><tbody id="tbSales"></tbody></table>
+        </div>
       </div>
-    </div>
-  </section>
+    </section>
 
-  <!-- Sales -->
-  <section id="pageSales" class="page hidden">
-    <div class="page-head"><h2>Sales Orders</h2>
-      <div class="tools">
-        <input id="salesSearch" class="search" placeholder="Filter…" />
-        <button id="btnSalesExport" class="btn ghost"><i class="fa-regular fa-file-excel"></i></button>
-      </div>
-    </div>
-    <div class="card"><table class="gridtable"><thead id="thSales"></thead><tbody id="tbSales"></tbody></table></div>
-  </section>
-
-  <!-- Plans -->
-  <section id="pagePlan" class="page hidden">
-    <div class="page-head"><h2>Production Plans</h2>
-      <div class="tools">
-        <input id="planSearch" class="search" placeholder="Filter…" />
-        <button id="btnPlanExport" class="btn ghost"><i class="fa-regular fa-file-excel"></i></button>
-      </div>
-    </div>
-    <div class="card"><table class="gridtable"><thead id="thPlan"></thead><tbody id="tbPlan"></tbody></table></div>
-  </section>
-
-  <!-- Shipments -->
-  <section id="pageShip" class="page hidden">
-    <div class="page-head"><h2>Shipments</h2>
-      <div class="tools">
-        <input id="shipSearch" class="search" placeholder="Filter…" />
-        <button id="btnShipExport" class="btn ghost"><i class="fa-regular fa-file-excel"></i></button>
-      </div>
-    </div>
-    <div class="card"><table class="gridtable"><thead id="thShip"></thead><tbody id="tbShip"></tbody></table></div>
-  </section>
-
-  <!-- Finished -->
-  <section id="pageFinished" class="page hidden">
-    <div class="page-head"><h2>Finished Goods</h2>
-      <div class="tools">
-        <input id="finSearch" class="search" placeholder="Filter…" />
-        <button id="btnFinExport" class="btn ghost"><i class="fa-regular fa-file-excel"></i></button>
-      </div>
-    </div>
-    <div class="card"><table class="gridtable"><thead id="thFin"></thead><tbody id="tbFin"></tbody></table></div>
-  </section>
-
-  <!-- Inventory -->
-  <section id="pageInv" class="page hidden">
-    <div class="page-head"><h2>Inventory</h2>
-      <div class="tools">
-        <input id="invSearch" class="search" placeholder="Filter…" />
-        <button id="btnInvExport" class="btn ghost"><i class="fa-regular fa-file-excel"></i></button>
-      </div>
-    </div>
-    <div class="card"><table class="gridtable"><thead id="thInv"></thead><tbody id="tbInv"></tbody></table></div>
-  </section>
-
-  <!-- Invoice -->
-  <section id="pageInvoice" class="page hidden">
-    <div class="page-head">
-      <h2>Invoice</h2>
-      <div class="tools">
-        <select id="invoiceCustomer" class="select"></select>
-        <input id="invoiceDate" type="date" class="input" />
-        <button id="btnInvoiceReload" class="btn ghost"><i class="fa-solid fa-rotate-right"></i></button>
-        <button id="btnInvoiceXlsx" class="btn ghost"><i class="fa-regular fa-file-excel"></i></button>
-        <button id="btnInvoicePdf" class="btn ghost"><i class="fa-regular fa-file-pdf"></i></button>
-        <button id="btnInvoiceSave" class="btn primary"><i class="fa-regular fa-circle-check"></i> Create</button>
-      </div>
-    </div>
-    <div class="grid grid-2">
+    <section id="pagePlan" class="hidden">
       <div class="card">
-        <h4 class="muted">候補（未請求）</h4>
-        <table class="gridtable">
-          <thead><tr><th></th><th>注番</th><th>商品名</th><th>品番</th><th>数量</th><th>単価</th><th>金額</th><th>出荷日</th></tr></thead>
-          <tbody id="tbInvoiceCandidates"></tbody>
-        </table>
+        <div class="row-between">
+          <h3 style="margin:0">生産計画</h3>
+          <div class="row">
+            <input id="planSearch" class="input" placeholder="検索…">
+            <button class="btn" id="btnPlanCreate"><i class="fa-solid fa-plus"></i> 作成</button>
+            <button class="btn" id="btnPlanImport"><i class="fa-solid fa-upload"></i> Import</button>
+            <button class="btn" id="btnPlanExport"><i class="fa-regular fa-file-excel"></i> Export</button>
+            <button class="btn" id="btnPlanPrint"><i class="fa-solid fa-print"></i> Print</button>
+            <button class="btn" id="btnPlanTpl"><i class="fa-regular fa-file"></i> 雛形CSV</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table"><thead id="thPlan"></thead><tbody id="tbPlan"></tbody></table>
+        </div>
       </div>
+    </section>
+
+    <section id="pageShip" class="hidden">
       <div class="card">
-        <h4 class="muted">出荷履歴・請求状態</h4>
-        <table class="gridtable">
-          <thead><tr><th>注番</th><th>商品名</th><th>品番</th><th>数量</th><th>単価</th><th>金額</th><th>出荷日</th><th>状態</th></tr></thead>
-          <tbody id="tbInvoiceStatus"></tbody>
-        </table>
-        <h4 class="muted mt">請求書一覧</h4>
-        <table class="gridtable">
-          <thead><tr><th>ID</th><th>得意先</th><th>発行日</th><th>合計</th><th>ファイル名</th><th>作成者</th></tr></thead>
-          <tbody id="tbInvoiceList"></tbody>
-        </table>
+        <div class="row-between">
+          <h3 style="margin:0">出荷予定</h3>
+          <div class="row">
+            <input id="shipSearch" class="input" placeholder="検索…">
+            <button class="btn" id="btnShipCreate"><i class="fa-solid fa-plus"></i> 作成</button>
+            <button class="btn" id="btnShipImport"><i class="fa-solid fa-upload"></i> Import</button>
+            <button class="btn" id="btnShipExport"><i class="fa-regular fa-file-excel"></i> Export</button>
+            <button class="btn" id="btnShipPrint"><i class="fa-solid fa-print"></i> Print</button>
+            <button class="btn" id="btnShipTpl"><i class="fa-regular fa-file"></i> 雛形CSV</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table"><thead id="thShip"></thead><tbody id="tbShip"></tbody></table>
+        </div>
       </div>
-    </div>
-  </section>
+    </section>
 
-  <!-- Analytics (placeholder) -->
-  <section id="pageAnalytics" class="page hidden">
-    <div class="page-head"><h2>Analytics</h2></div>
-    <div class="card"><p class="muted">Add KPIs/Charts here…</p></div>
-  </section>
+    <section id="pageFinished" class="hidden">
+      <div class="card">
+        <div class="row-between">
+          <h3 style="margin:0">完成品一覧</h3>
+          <div class="row">
+            <input id="finSearch" class="input" placeholder="検索…">
+            <button class="btn" id="btnFinExport"><i class="fa-regular fa-file-excel"></i> Export</button>
+            <button class="btn" id="btnFinPrint"><i class="fa-solid fa-print"></i> Print</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table"><thead id="thFin"></thead><tbody id="tbFin"></tbody></table>
+        </div>
+      </div>
+    </section>
 
- <!-- PATCH: dialog operasi (OK/NG) -->
-<dialog id="dlgOp" class="dlg">
-  <h3 style="margin:0 0 10px">入力（工程・OK/NG）</h3>
-  <div class="row"><b>PO:</b>&nbsp;<span id="opPO">—</span></div>
-  <div class="grid2" style="margin-top:8px">
-    <div class="form-item"><div class="s muted">工程</div>
-      <select id="opProcess"></select>
-    </div>
-    <div class="form-item"><div class="s muted">OK数</div><input id="opOK" type="number" value="0" min="0"></div>
-    <div class="form-item"><div class="s muted">NG数</div><input id="opNG" type="number" value="0" min="0"></div>
-    <div class="form-item"><div class="s muted">備考</div><input id="opNote" placeholder=""></div>
+    <section id="pageInv" class="hidden">
+      <div class="card">
+        <div class="row-between">
+          <h3 style="margin:0">在庫</h3>
+          <div class="row">
+            <input id="invSearch" class="input" placeholder="検索…">
+            <button class="btn" id="btnInvExport"><i class="fa-regular fa-file-excel"></i> Export</button>
+            <button class="btn" id="btnInvPrint"><i class="fa-solid fa-print"></i> Print</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table"><thead id="thInv"></thead><tbody id="tbInv"></tbody></table>
+        </div>
+      </div>
+    </section>
+
+    <section id="pageInvoice" class="hidden">
+      <div class="card">
+        <div class="row-between">
+          <h3 style="margin:0">請求書作成</h3>
+          <div class="row">
+            <select id="invoiceCustomer" style="min-width:220px"><option value="">(得意先を選択)</option></select>
+            <input id="invoiceDate" type="date" class="input">
+            <button class="btn" id="btnInvoiceReload"><i class="fa-solid fa-rotate"></i> 更新</button>
+            <button class="btn primary" id="btnInvoiceSave"><i class="fa-regular fa-floppy-disk"></i> 保存</button>
+            <button class="btn" id="btnInvoicePdf"><i class="fa-regular fa-file-pdf"></i> PDF出力</button>
+            <button class="btn" id="btnInvoiceXlsx"><i class="fa-regular fa-file-excel"></i> Excel出力</button>
+          </div>
+        </div>
+
+        <div class="card sub" style="margin-top:.6rem">
+          <div class="s muted" style="margin-bottom:6px">未（候補）</div>
+          <div class="table-wrap">
+            <table class="table">
+              <thead>
+                <tr><th>選択</th><th>注番</th><th>商品名</th><th>品番</th><th>数量</th><th>単価</th><th>金額</th><th>出荷日</th></tr>
+              </thead>
+              <tbody id="tbInvoiceCandidates"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card sub" style="margin-top:.6rem">
+          <div class="s muted" style="margin-bottom:6px">得意先内 全件（ステータス）</div>
+          <div class="table-wrap">
+            <table class="table">
+              <thead>
+                <tr><th>注番</th><th>商品名</th><th>品番</th><th>数量</th><th>単価</th><th>金額</th><th>出荷日</th><th>状態</th></tr>
+              </thead>
+              <tbody id="tbInvoiceStatus"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:.6rem">
+        <h3 style="margin:0 0 10px">請求書一覧</h3>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr><th>請求書番号</th><th>得意先</th><th>発行日</th><th>合計</th><th>ファイル名</th><th>作成者</th></tr></thead>
+            <tbody id="tbInvoiceList"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
   </div>
-  <div class="row" style="margin-top:10px">
-    <button class="btn primary" id="btnOpSave">保存</button>
-    <button class="btn" id="btnOpCancel">閉じる</button>
-  </div>
-</dialog>
 
-
-  <!-- Dialog: QR Scan -->
-  <dialog id="dlgScan" class="dialog">
-    <h3><i class="fa-solid fa-qrcode"></i> スキャン</h3>
-    <video id="scanVideo" playsinline></video>
-    <canvas id="scanCanvas" class="hidden"></canvas>
-    <div class="muted s">Result: <span id="scanResult">—</span></div>
-    <div class="actions">
-      <button id="btnScanClose" class="btn ghost">閉じる</button>
-      <button id="btnScanStart" class="btn primary">開始</button>
+  <!-- ======= DIALOGS ======= -->
+  <dialog id="dlgForm" class="paper">
+    <div class="body">
+      <h3 id="dlgTitle" style="margin:0 0 10px">フォーム</h3>
+      <form id="formBody" method="dialog"></form>
     </div>
+    <footer class="row">
+      <button class="btn primary" id="btnDlgSave">保存</button>
+      <button class="btn ghost" id="btnDlgCancel">キャンセル</button>
+    </footer>
   </dialog>
-<!-- PATCH: dialog Add Member -->
-<dialog id="dlgAddUser" class="dlg">
-  <h3 style="margin:0 0 10px">Add Member Baru</h3>
-  <div class="grid2">
-    <div class="form-item"><div class="s muted">Username</div><input id="uUsername" autocomplete="off"></div>
-    <div class="form-item"><div class="s muted">Password</div><input id="uPassword" type="password"></div>
-    <div class="form-item"><div class="s muted">Full name</div><input id="uFull"></div>
-    <div class="form-item"><div class="s muted">Department</div><input id="uDept" placeholder="例: 生産技術"></div>
-    <div class="form-item"><div class="s muted">Role</div><input id="uRole" placeholder="admin / member"></div>
-    <div class="form-item"><div class="s muted">Active</div>
-      <select id="uActive"><option value="TRUE">TRUE</option><option value="FALSE">FALSE</option></select>
-    </div>
-  </div>
-  <div class="row" style="margin-top:10px">
-    <button class="btn primary" id="btnUserSave">Simpan</button>
-    <button class="btn" id="btnUserCancel">Batal</button>
-  </div>
-</dialog>
 
-  <!-- Libs -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.20.0/xlsx.full.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+  <dialog id="dlgOp" class="paper">
+    <div class="body">
+      <h3 style="margin:0 0 10px">工程 手入力</h3>
+      <div class="row"><span class="muted s">注番:</span><b id="opPO"></b></div>
+      <div class="form-item">
+        <label>工程</label>
+        <select id="opProcess"></select>
+      </div>
+      <div class="grid grid-form">
+        <div class="form-item"><label>OK</label><input id="opOK" type="number" min="0" value="0"></div>
+        <div class="form-item"><label>NG</label><input id="opNG" type="number" min="0" value="0"></div>
+      </div>
+      <div class="form-item"><label>備考</label><input id="opNote" placeholder="備考"></div>
+    </div>
+    <footer class="row">
+      <button class="btn primary" id="btnOpSave">保存</button>
+      <button class="btn ghost" id="btnOpCancel">キャンセル</button>
+    </footer>
+  </dialog>
+
+  <dialog id="dlgScan" class="paper">
+    <div class="body">
+      <h3 style="margin:0 0 8px">QR スキャン</h3>
+      <div id="scanResult" class="s muted">—</div>
+      <div style="display:grid;gap:6px;margin-top:8px">
+        <video id="scanVideo" style="width:100%;max-height:260px;background:#000;border-radius:10px" playsinline></video>
+        <canvas id="scanCanvas" style="width:100%;max-height:260px;border:1px solid var(--border);border-radius:10px"></canvas>
+      </div>
+    </div>
+    <footer class="row">
+      <button class="btn primary" id="btnScanStart"><i class="fa-solid fa-camera"></i> スキャン開始</button>
+      <button class="btn ghost" id="btnScanClose">閉じる</button>
+    </footer>
+  </dialog>
+
+  <!-- Admin: Add Member Baru -->
+  <dialog id="dlgAddUser" class="paper">
+    <div class="body">
+      <h3 style="margin:0 0 10px"><i class="fa-solid fa-user-plus"></i> Add Member Baru</h3>
+      <div class="grid grid-form">
+        <div class="form-item"><label>Username<span class="req">*</span></label><input id="auUser" required></div>
+        <div class="form-item"><label>Password<span class="req">*</span></label><input id="auPass" type="password" required></div>
+        <div class="form-item"><label>Role<span class="req">*</span></label>
+          <select id="auRole">
+            <option value="admin">admin</option>
+            <option value="営業">営業</option>
+            <option value="生産管理">生産管理</option>
+            <option value="生産管理部">生産管理部</option>
+            <option value="製造">製造</option>
+            <option value="検査">検査</option>
+          </select>
+        </div>
+        <div class="form-item"><label>Department</label><input id="auDept" placeholder="opsional"></div>
+        <div class="form-item"><label>Nama Lengkap</label><input id="auName" placeholder="opsional"></div>
+      </div>
+      <p class="s muted">Hanya admin yang dapat membuat akun baru.</p>
+    </div>
+    <footer class="row">
+      <button class="btn primary" id="btnAddUserSave">Simpan</button>
+      <button class="btn ghost" id="btnAddUserCancel">Batal</button>
+    </footer>
+  </dialog>
 
   <!-- App -->
-  <script src="app.js"></script>
-  
+  <script defer src="app.js"></script>
 </body>
 </html>
