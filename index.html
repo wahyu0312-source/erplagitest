@@ -26,6 +26,20 @@
         <button id="btnToAnalytics" class="navbtn">Analytics</button>
       </nav>
     </div>
+    <!-- PATCH: topbar addon -->
+<div id="weatherWrap" class="hidden" style="display:flex;gap:12px;align-items:center">
+  <span id="wxPlace" class="s muted"></span>
+  <span id="wxTemp" class="s muted"></span>
+  <span id="wxWind" class="s muted"></span>
+</div>
+
+<div id="ddSetting" class="hidden" style="display:flex;gap:8px;margin-left:12px">
+  <button class="btn" id="btnTheme" title="Dark/Light">Theme</button>
+  <button class="btn" id="btnAddUser" title="Add Member (Admin only)">
+    <i class="fa-solid fa-user-plus"></i><span> Add Member</span>
+  </button>
+</div>
+
     <div class="right">
       <span id="userInfo" class="muted"></span>
       <button id="btnLogout" class="btn ghost"><i class="fa-solid fa-right-from-bracket"></i> ログアウト</button>
@@ -171,20 +185,24 @@
     <div class="card"><p class="muted">Add KPIs/Charts here…</p></div>
   </section>
 
-  <!-- Dialog: Operation -->
-  <dialog id="dlgOp" class="dialog">
-    <h3>作業入力 <span id="opPO" class="muted"></span></h3>
-    <div class="grid grid-2">
-      <label>工程<select id="opProcess"></select></label>
-      <label>OK<input id="opOK" type="number" min="0" value="0"></label>
-      <label>NG<input id="opNG" type="number" min="0" value="0"></label>
-      <label>備考<input id="opNote" placeholder="note…"></label>
+ <!-- PATCH: dialog operasi (OK/NG) -->
+<dialog id="dlgOp" class="dlg">
+  <h3 style="margin:0 0 10px">入力（工程・OK/NG）</h3>
+  <div class="row"><b>PO:</b>&nbsp;<span id="opPO">—</span></div>
+  <div class="grid2" style="margin-top:8px">
+    <div class="form-item"><div class="s muted">工程</div>
+      <select id="opProcess"></select>
     </div>
-    <div class="actions">
-      <button id="btnOpCancel" class="btn ghost">キャンセル</button>
-      <button id="btnOpSave" class="btn primary">保存</button>
-    </div>
-  </dialog>
+    <div class="form-item"><div class="s muted">OK数</div><input id="opOK" type="number" value="0" min="0"></div>
+    <div class="form-item"><div class="s muted">NG数</div><input id="opNG" type="number" value="0" min="0"></div>
+    <div class="form-item"><div class="s muted">備考</div><input id="opNote" placeholder=""></div>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <button class="btn primary" id="btnOpSave">保存</button>
+    <button class="btn" id="btnOpCancel">閉じる</button>
+  </div>
+</dialog>
+
 
   <!-- Dialog: QR Scan -->
   <dialog id="dlgScan" class="dialog">
@@ -197,6 +215,24 @@
       <button id="btnScanStart" class="btn primary">開始</button>
     </div>
   </dialog>
+<!-- PATCH: dialog Add Member -->
+<dialog id="dlgAddUser" class="dlg">
+  <h3 style="margin:0 0 10px">Add Member Baru</h3>
+  <div class="grid2">
+    <div class="form-item"><div class="s muted">Username</div><input id="uUsername" autocomplete="off"></div>
+    <div class="form-item"><div class="s muted">Password</div><input id="uPassword" type="password"></div>
+    <div class="form-item"><div class="s muted">Full name</div><input id="uFull"></div>
+    <div class="form-item"><div class="s muted">Department</div><input id="uDept" placeholder="例: 生産技術"></div>
+    <div class="form-item"><div class="s muted">Role</div><input id="uRole" placeholder="admin / member"></div>
+    <div class="form-item"><div class="s muted">Active</div>
+      <select id="uActive"><option value="TRUE">TRUE</option><option value="FALSE">FALSE</option></select>
+    </div>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <button class="btn primary" id="btnUserSave">Simpan</button>
+    <button class="btn" id="btnUserCancel">Batal</button>
+  </div>
+</dialog>
 
   <!-- Libs -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.20.0/xlsx.full.min.js"></script>
@@ -205,5 +241,6 @@
 
   <!-- App -->
   <script src="app.js"></script>
+  
 </body>
 </html>
