@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>東京精密発條株式会社システム</title>
+  <title>東京精密発條 ERP</title>
 
   <!-- Icons & Fonts -->
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"/>
 
   <!-- Styles -->
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css"/>
 
   <!-- Libs (defer agar first paint cepat) -->
   <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
@@ -18,12 +18,12 @@
   <script defer src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
 </head>
-<body>
+<body class="auth"> <!-- body.auth -> hanya login yang tampil -->
 
   <!-- ======= TOP BAR ======= -->
-  <div class="nav" id="topBar">
+  <header class="nav" id="topBar" aria-label="Global navigation">
     <div class="nav-left">
-      <img class="logo" src="data:image/svg+xml,%3Csvg ... %3C/svg%3E" alt="logo">
+      <img class="logo" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 48 48'%3E%3Cdefs/%3E%3Cg fill='none' stroke='%23fff' stroke-width='3'%3E%3Ccircle cx='24' cy='24' r='17' fill='%230ea5a4'/%3E%3Cpath d='M14 27l7-10 7 10m-7-10v17'/%3E%3C/g%3E%3C/svg%3E" alt="logo"/>
       <div class="brand">TSH</div>
       <div id="weatherWrap" class="row hidden">
         <i class="fa-regular fa-sun"></i>
@@ -31,13 +31,13 @@
         <span class="s muted">/</span>
         <span id="wxWind">—</span>
         <span class="s muted">·</span>
-        <span id="wxPlace" class="s">—</span>
+        <span id="wxPlace" class="s">GMT+9</span>
       </div>
       <span class="s" id="userInfo"></span>
     </div>
 
-    <!-- NOTE: tombol menu dipindahkan ke sisi kanan -->
-    <div class="nav-right">
+    <!-- Menu ke sisi kanan -->
+    <nav class="nav-right" role="navigation">
       <button class="btn" id="btnToDash"><i class="fa-solid fa-gauge"></i> ダッシュボード</button>
       <button class="btn" id="btnToSales"><i class="fa-regular fa-clipboard"></i> 受注</button>
       <button class="btn" id="btnToPlan"><i class="fa-solid fa-list-check"></i> 生産計画</button>
@@ -47,20 +47,21 @@
       <button class="btn" id="btnToInvoice"><i class="fa-regular fa-file-lines"></i> 請求書</button>
       <button class="btn" id="btnToAnalytics"><i class="fa-solid fa-chart-line"></i> 分析チャート</button>
 
-      <!-- Sistem (admin only) -->
-      <div class="btn" id="ddSetting">
-        <i class="fa-solid fa-gear"></i> システム
-        <div class="row">
-          <div class="chip" id="btnStationQR"><i class="fa-solid fa-qrcode"></i> 工程QR</div>
-          <div class="chip hidden" id="btnAddMember"><i class="fa-solid fa-user-plus"></i> Add Member Baru</div>
+      <!-- Sistem + tools -->
+      <div class="dropdown-inline" id="sysWrap">
+        <button class="btn" id="btnSystem"><i class="fa-solid fa-gear"></i> システム</button>
+        <div class="dropdown-menu">
+          <button class="menuitem" id="btnStationQR"><i class="fa-solid fa-qrcode"></i> 工程QR</button>
+          <button class="menuitem hidden" id="btnAddMember"><i class="fa-solid fa-user-plus"></i> Add Member Baru</button>
         </div>
       </div>
 
       <button class="btn ghost" id="btnLogout"><i class="fa-solid fa-right-from-bracket"></i> ログアウト</button>
-    </div>
-  </div>
+    </nav>
+  </header>
 
-  <div class="container">
+  <main class="container">
+
     <!-- ======= LOGIN ======= -->
     <section id="authView" class="card card-tight">
       <h3 class="center"><i class="fa-solid fa-right-to-bracket"></i> ログイン</h3>
@@ -80,7 +81,7 @@
     </section>
 
     <!-- ======= DASHBOARD ======= -->
-    <section id="pageDash" class="hidden">
+    <section id="pageDash" class="hidden" aria-live="polite">
       <div class="card">
         <div class="row-between">
           <h3 style="margin:0">生産計画</h3>
@@ -97,7 +98,7 @@
                 <th>状態</th><th>工程</th><th>更新</th><th>更新者</th><th>操作</th>
               </tr>
             </thead>
-            <tbody id="tbOrders"></tbody>
+            <tbody id="tbOrders"><tr><td colspan="9" class="muted">読み込み中…</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -114,7 +115,7 @@
       </div>
     </section>
 
-    <!-- ======= PAGES LAIN (tidak diubah) ======= -->
+    <!-- ======= PAGES LAIN ======= -->
     <section id="pageSales" class="hidden">
       <div class="card">
         <div class="row-between">
@@ -253,7 +254,7 @@
         </div>
       </div>
     </section>
-  </div>
+  </main>
 
   <!-- ======= DIALOGS ======= -->
   <dialog id="dlgForm" class="paper">
@@ -271,10 +272,7 @@
     <div class="body">
       <h3 style="margin:0 0 10px">工程 手入力</h3>
       <div class="row"><span class="muted s">注番:</span><b id="opPO"></b></div>
-      <div class="form-item">
-        <label>工程</label>
-        <select id="opProcess"></select>
-      </div>
+      <div class="form-item"><label>工程</label><select id="opProcess"></select></div>
       <div class="grid grid-form">
         <div class="form-item"><label>OK</label><input id="opOK" type="number" min="0" value="0"></div>
         <div class="form-item"><label>NG</label><input id="opNG" type="number" min="0" value="0"></div>
