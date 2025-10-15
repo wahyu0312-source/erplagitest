@@ -38,7 +38,7 @@ function jsonp(action, params={}){
     params = { ...params, action, callback: cb };
     const s = document.createElement("script");
     s.src = `${API_BASE}?${qs(params)}`;
-    let timeout = setTimeout(()=>{ cleanup(); reject(new Error("API timeout")); }, 12000);
+    let timeout = setTimeout(()=>{ cleanup(); reject(new Error("API timeout")); }, 6000);
     function cleanup(){ try{ delete window[cb]; s.remove(); }catch{} clearTimeout(timeout); }
     window[cb] = (resp)=>{ cleanup(); if(resp && resp.ok) resolve(resp.data); else reject(new Error((resp && resp.error) || "API error")); };
     s.onerror = ()=>{ cleanup(); reject(new Error("JSONP load error")); };
@@ -141,10 +141,22 @@ async function loginSubmit(){
     if($("#inUser")) $("#inUser").value="";
     if($("#inPass")) $("#inPass").value="";
     if($("#btnLogout")) $("#btnLogout").classList.remove("hidden");
+    // setelah setUser(me);
+Promise.allSettled([
+  cached("listOrders",{},8000),
+  cached("listShip",{},8000),
+  cached("listPlans",{},8000)
+]).then(([o,s,p])=>{
+  if(o.status==="fulfilled"){ ORDERS = o.value; renderOrders(); }
+  if(s.status==="fulfilled"){ SHIPS  = s.value; }
+  if(p.status==="fulfilled"){ PLANS  = p.value; }
+}).catch(()=>{});
+
   }catch(e){
     alert("ログイン失敗: " + (e?.message || e));
   }
 }
+
 setOnClick("#btnLogout", async ()=>{
   try {
     if($("#dlgScan")?.open) $("#dlgScan").close();
@@ -165,6 +177,20 @@ async function loadOrders(){
   renderOrders();
   loadShipsMini().catch(()=>{});
 }
+async function loadOrders(){
+  const tb = document.getElementById("tbOrders");
+  if(tb) tb.innerHTML = `<tr><td colspan="9" class="muted">読み込み中…</td></tr>`;
+  try{
+    ORDERS = await cached("listOrders",{},15000);
+  }catch(e){
+    ORDERS = [];
+    if(tb) tb.innerHTML = `<tr><td colspan="9" class="muted">データ取得に失敗しました (${e.message||e})</td></tr>`;
+    return;
+  }
+  renderOrders();
+  loadShipsMini().catch(()=>{});
+}
+
 function renderOrders(){
   const q = ($("#searchQ")?.value||"").trim().toLowerCase();
   const rows = (ORDERS||[]).filter(r => !q || JSON.stringify(r).toLowerCase().includes(q));
@@ -216,6 +242,11 @@ function renderOrders(){
       $$(".btn-stqr",tb).forEach(b=> b.onclick = openStationQrSheet);
       $$(".btn-scan",tb).forEach(b=> b.onclick=(e)=> openScanDialog(e.currentTarget.dataset.po));
       $$(".btn-op",tb).forEach(b=> b.onclick=(e)=> openOpDialog(e.currentTarget.dataset.po));
+      if(!rows.length){
+  tb.innerHTML = `<tr><td colspan="9" class="muted">データがありません</td></tr>`;
+  return;
+}
+
     }
   })();
 }
@@ -290,13 +321,23 @@ async function loadShips(){
   attachSearch("#shipSearch","#tbShip");
   setOnClick("#btnShipExport", ()=> exportTableCSV("#tbShip","shipments.csv"));
   setOnClick("#btnShipPrint", ()=> window.print());
-  setOnClick("#btnShipCreate", ()=> openFormDialog("出荷予定 作成", [
-    {key:"po_id",label:"注番"},
-    {key:"得意先",label:"得意先"},
-    {key:"数量",label:"数量"},
-    {key:"出荷日",label:"出荷日"},
-    {key:"納入先",label:"納入先"}
-  ], async ()=>{ alert("デモ: 作成ハンドラはバックエンド未実装"); }));
+  setOnClick("#btnPlanCreate", ()=> openFormDialog("生産計画 作成", [
+  {key:"po_id",label:"注番"},
+  {key:"工程",label:"工程"},
+  {key:"開始予定",label:"開始予定"},
+  {key:"終了予定",label:"終了予定"},
+  {key:"担当",label:"担当"},
+  {key:"メモ",label:"メモ"}
+], async (data)=>{
+  // validasi minimal
+  if(!data.po_id) throw new Error("注番は必須です");
+  await jsonp("savePlan", data);     // <— panggil endpoint baru
+  alert("保存しました");
+  PLANS = await cached("listPlans",{},0);
+  renderGenericTable("#thPlan", "#tbPlan", PLANS,
+    ["po_id","工程","開始予定","終了予定","担当","メモ","状態"]);
+}));
+
 }
 async function loadShipsMini(){
   try{
