@@ -1,258 +1,311 @@
-/* ========= CONFIG ========= */
-const DEFAULT_API_BASE = "https://script.google.com/macros/s/AKfycbyFPilRpjXxKVlM2Av2LunQJAIJszz9wNX0j1Ab1pbWkZeecIx_QNZwoKQR6XCNGYSLGA/exec"; // ex: https://script.google.com/macros/s/AKfycb.../exec
+/* =================================================
+  App JS — Fast Login + Skeleton + CRUD lengkap
+  Backend: Google Apps Script JSONP (API_BASE)
+================================================= */
 
-/* ---- allow override via URL param ?api= ---- */
-const urlApi = new URLSearchParams(location.search).get("api");
-const API_BASE = urlApi ? decodeURIComponent(urlApi) : DEFAULT_API_BASE;
+/* ====== CONFIG ====== */
+const API_BASE = "https://script.google.com/macros/s/AKfycbyFPilRpjXxKVlM2Av2LunQJAIJszz9wNX0j1Ab1pbWkZeecIx_QNZwoKQR6XCNGYSLGA/exec"; // /exec tanpa query
 
-/* ========= UTIL ========= */
+/* ====== Helpers ====== */
 const $  = (q, el=document)=> el.querySelector(q);
 const $$ = (q, el=document)=> [...el.querySelectorAll(q)];
-const qs = (o)=> Object.entries(o).map(([k,v])=> `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join("&");
-const fmtDate = (v)=> v? new Date(v).toLocaleDateString("ja-JP") : "";
-const fmtTime = (v)=> v? new Date(v).toLocaleString("ja-JP") : "";
-const numJP   = (n)=> Number(n||0).toLocaleString("ja-JP");
-const idle    = window.requestIdleCallback || ((fn)=> setTimeout(fn,0));
-const sleep   = (ms)=> new Promise(r=> setTimeout(r,ms));
-function debounce(fn, ms){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; }
-function setBusy(scope,on){
-  scope.classList.toggle("is-busy", !!on);
-  scope.querySelectorAll("button,input,select").forEach(x=> x.disabled=!!on);
-}
+const qs = (o)=> Object.entries(o).map(([k,v])=>`${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join("&");
+function debounce(fn,ms){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a),ms); }; }
+window.requestIdleCallback ||= (cb)=> setTimeout(cb,0);
 
-/* ========= HEALTH CHECK ========= */
-(function checkApi(){
-  const warn = $("#apiWarn");
-  if(!API_BASE || !/script\.google\.com\/macros\/s\//.test(API_BASE) || !/\/exec(\?|$)/.test(API_BASE)){
-    warn.classList.remove("hidden");
-    warn.innerHTML = `<b>API belum diset</b>. Masukkan URL WebApp GAS <code>/exec</code> ke <code>DEFAULT_API_BASE</code> 
-    atau tambahkan <code>?api=URL_EXEC</code> di alamat browser.`;
+/* ====== Theme (Light default) ====== */
+const THEME_KEY="erp_theme";
+function applyTheme(mode){
+  const root=document.documentElement, dark=(mode==='dark');
+  document.body.dataset.theme = dark?'dark':'light';
+  const set=(k,v)=> root.style.setProperty(k,v);
+  if(dark){
+    set('--bg','#0f172a'); set('--panel','#111827'); set('--ink','#e5e7eb');
+    set('--muted','#94a3b8'); set('--border','#1f2937'); set('--ring','#1d4ed8');
+    set('--btn','#22c55e'); set('--brand','#22c55e');
   }else{
-    warn.classList.add("hidden");
+    set('--bg','#f6f7fb'); set('--panel','#fff'); set('--ink','#0f172a');
+    set('--muted','#64748b'); set('--border','#e5e7eb'); set('--ring','#c7d2fe');
+    set('--btn','#109293'); set('--brand','#0ea5a6');
   }
-})();
-
-/* ========= JSONP + CACHE ========= */
-function jsonp(action, params={}){
-  return new Promise((resolve, reject)=>{
-    if(!API_BASE){ return reject(new Error("API BASE URL is empty")); }
-    const cb = "cb_" + Math.random().toString(36).slice(2);
-    params = { ...params, action, callback: cb };
-    const s = document.createElement("script");
-    const url = API_BASE + (API_BASE.includes("?")?"&":"?") + qs(params);
-    const timer = setTimeout(()=>{ cleanup(); reject(new Error("API timeout / wrong endpoint")); }, 12000);
-    function cleanup(){ try{ delete window[cb]; s.remove(); }catch{} clearTimeout(timer); }
-    window[cb] = (resp)=>{ cleanup(); if(resp && resp.ok){ resolve(resp.data); } else { reject(new Error(resp?.error||"API error")); } };
-    s.onerror = ()=>{ cleanup(); reject(new Error("JSONP network error / CORS / wrong URL")); };
-    s.src = url; document.body.appendChild(s);
+  localStorage.setItem(THEME_KEY, mode);
+}
+function initTheme(){
+  applyTheme(localStorage.getItem(THEME_KEY)||'light');
+  $("#btnTheme")?.addEventListener("click",()=>{
+    const cur=localStorage.getItem(THEME_KEY)||'light';
+    applyTheme(cur==='light'?'dark':'light');
   });
 }
-const _cache = new Map();
-async function cached(action, params, ttl){
-  const key = action+"::"+JSON.stringify(params||{});
-  const now = Date.now();
-  const hit = _cache.get(key);
-  if(hit && (now-hit.t)<ttl) return hit.v;
-  const v = await jsonp(action, params);
-  _cache.set(key,{v,t:now});
-  return v;
-}
-function bust(prefix){ [..._cache.keys()].forEach(k=> k.startsWith(prefix) && _cache.delete(k)); }
 
-/* ========= SESSION / NAV ========= */
-let CURRENT_USER=null;
-function setUser(u){
-  CURRENT_USER=u||null;
-  $("#topBar").classList.toggle("hidden", !u);
-  ["authView","pageDash","pageSales","pagePlan","pageShip","pageFinished","pageInv","pageInvoice","pageAnalytics"]
-    .forEach(id=> $("#"+id)?.classList.add("hidden"));
-  ["btnToDash","btnToSales","btnToPlan","btnToShip","btnToFinPage","btnToInvPage","btnToInvoice","btnToAnalytics"]
-    .forEach(id=> $("#"+id)?.classList.add("hidden"));
-  if(!u){ $("#authView").classList.remove("hidden"); return; }
-  $("#userInfo").textContent = `${u.full_name||u.username} / ${u.role||u.department||"-"}`;
-  ["btnToDash","btnToSales","btnToPlan","btnToShip","btnToFinPage","btnToInvPage","btnToInvoice","btnToAnalytics"]
-    .forEach(id=> $("#"+id)?.classList.remove("hidden"));
-  show("pageDash"); refreshDashboard();
+/* ====== JSONP + cache ====== */
+function jsonp(action, params={}, timeoutMs=8000){
+  return new Promise((resolve,reject)=>{
+    const cb="cb_"+Math.random().toString(36).slice(2);
+    params={...params, action, callback:cb};
+    const s=document.createElement("script");
+    s.src=`${API_BASE}?${qs(params)}`;
+    let done=false;
+    const timer=setTimeout(()=>{ if(done) return; done=true; cleanup(); reject(new Error("API timeout")); },timeoutMs);
+    function cleanup(){ try{ delete window[cb]; s.remove(); }catch{} clearTimeout(timer); }
+    window[cb]=(resp)=>{ if(done) return; done=true; cleanup(); if(resp&&resp.ok) resolve(resp.data); else reject(new Error(resp?.error||"API error")); };
+    s.onerror=()=>{ if(done) return; done=true; cleanup(); reject(new Error("JSONP error")); };
+    document.body.appendChild(s);
+  });
 }
+const cache=new Map();
+async function cached(action,params={},ttl=15000){
+  const k=action+":"+JSON.stringify(params||{});
+  const t=Date.now(), hit=cache.get(k);
+  if(hit && (t-hit.t)<ttl) return hit.v;
+  const v=await jsonp(action,params); cache.set(k,{v,t}); return v;
+}
+
+/* ====== Skeleton ====== */
+(function injectSkeletonCSS(){
+  if($("#skl-css")) return;
+  const st=document.createElement("style"); st.id="skl-css";
+  st.textContent=`
+  :root{--skl:#e5e7eb;--skl-hi:#f3f4f6}
+  [data-theme="dark"]{--skl:#1f2937;--skl-hi:#111827}
+  .skl-line{height:14px;border-radius:999px;background:linear-gradient(90deg,var(--skl) 0%,var(--skl-hi) 40%,var(--skl) 80%);background-size:200% 100%;animation:skl 1.2s linear infinite}
+  @keyframes skl{0%{background-position:200% 0}100%{background-position:-200% 0}}
+  `;
+  document.head.appendChild(st);
+})();
+function skeletonRows(tbody, cols, rows=8){
+  tbody.innerHTML="";
+  for(let i=0;i<rows;i++){
+    const tr=document.createElement("tr");
+    tr.innerHTML=Array.from({length:cols}).map(()=>`<td><div class="skl-line"></div></td>`).join("");
+    tbody.appendChild(tr);
+  }
+}
+
+/* ====== Session / Role ====== */
+let CURRENT_USER=null;
+const ROLE_MAP={
+  admin:{pages:['pageDash','pageSales','pagePlan','pageShip','pageFinished','pageInv','pageInvoice','pageAnalytics'],nav:true},
+  '営業':{pages:['pageSales','pageDash','pageFinished','pageInv','pageInvoice','pageAnalytics'],nav:true},
+  '生産管理':{pages:['pagePlan','pageShip','pageDash','pageFinished','pageInv','pageInvoice','pageAnalytics'],nav:true},
+  '生産管理部':{pages:['pagePlan','pageShip','pageDash','pageFinished','pageInv','pageInvoice','pageAnalytics'],nav:true},
+  '製造':{pages:['pageDash','pageFinished','pageInv','pageAnalytics'],nav:true},
+  '検査':{pages:['pageDash','pageFinished','pageInv','pageAnalytics'],nav:true},
+};
 function show(id){
   ["authView","pageDash","pageSales","pagePlan","pageShip","pageFinished","pageInv","pageInvoice","pageAnalytics"]
-    .forEach(s=> $("#"+s)?.classList.add("hidden"));
+    .forEach(p=> $("#"+p)?.classList.add("hidden"));
   $("#"+id)?.classList.remove("hidden");
 }
+function setUser(u){
+  CURRENT_USER=u||null;
+  $("#topBar").classList.toggle("hidden",!u);
+  $("#userInfo").textContent=u?`${u.full_name||u.username}／${u.role||u.department||''}`:'';
+  ['btnToDash','btnToSales','btnToPlan','btnToShip','btnToFinPage','btnToInvPage','btnToInvoice','btnToAnalytics','ddSetting','weatherWrap']
+    .forEach(id=> $("#"+id)?.classList.add("hidden"));
+  if(!u){ show("authView"); return; }
+  const allow=ROLE_MAP[u.role]||ROLE_MAP[u.department]||ROLE_MAP.admin;
+  allow.pages.includes('pageDash')&&$("#btnToDash").classList.remove("hidden");
+  allow.pages.includes('pageSales')&&$("#btnToSales").classList.remove("hidden");
+  allow.pages.includes('pagePlan') &&$("#btnToPlan").classList.remove("hidden");
+  allow.pages.includes('pageShip') &&$("#btnToShip").classList.remove("hidden");
+  allow.pages.includes('pageFinished')&&$("#btnToFinPage").classList.remove("hidden");
+  allow.pages.includes('pageInv')&&$("#btnToInvPage").classList.remove("hidden");
+  allow.pages.includes('pageInvoice')&&$("#btnToInvoice").classList.remove("hidden");
+  allow.pages.includes('pageAnalytics')&&$("#btnToAnalytics").classList.remove("hidden");
+  $("#ddSetting").classList.remove("hidden");
+  $("#weatherWrap").classList.remove("hidden");
+  ensureWeather();
+  Promise.allSettled([
+    cached("listOrders",{},12000),
+    cached("listSales",{},12000),
+    cached("listPlans",{},12000),
+    cached("listShip",{},12000),
+    cached("listFinished",{},12000),
+    cached("listInventory",{},12000),
+  ]);
+  show("pageDash"); refreshDashboard();
+}
 
-/* ========= LOGIN ========= */
-$("#btnLogin")?.addEventListener("click", loginSubmit);
-$("#inUser")?.addEventListener("keydown", e=> e.key==="Enter" && loginSubmit());
-$("#inPass")?.addEventListener("keydown", e=> e.key==="Enter" && loginSubmit());
-$("#btnLogout")?.addEventListener("click", ()=> setUser(null));
-
-async function loginSubmit(){
-  const username = $("#inUser").value.trim();
-  const password = $("#inPass").value.trim();
-  if(!username || !password) return alert("ユーザー名・パスワードを入力してください");
+/* ====== Login ====== */
+$("#btnLogin")?.addEventListener("click",doLogin);
+$("#inUser")?.addEventListener("keydown",e=> e.key==="Enter"&&doLogin());
+$("#inPass")?.addEventListener("keydown",e=> e.key==="Enter"&&doLogin());
+$("#btnLogout")?.addEventListener("click",()=> setUser(null));
+async function doLogin(){
+  const u=$("#inUser").value.trim(), p=$("#inPass").value.trim();
+  if(!u||!p) return alert("ユーザー名／パスワードを入力してください。");
+  $("#authView .card").style.opacity=.6;
   try{
-    await Promise.race([jsonp("ping"), sleep(120)]);
-    const me = await jsonp("login",{ username, password });
+    await Promise.race([jsonp("ping",{},3000), new Promise(r=>setTimeout(r,150))]);
+    const me=await jsonp("login",{username:u,password:p},6000);
     setUser(me);
-    idle(()=> cached("listMasters",{},300000).catch(()=>{}));
-    idle(()=> cached("listOrders",{},30000).catch(()=>{}));
-  }catch(err){ alert("ログイン失敗: " + err.message); }
+  }catch(e){ alert("ログイン失敗: "+e.message); }
+  finally{ $("#authView .card").style.opacity=1; }
 }
 
-/* ========= UI HELPERS ========= */
-const normalizeProc = (s)=> String(s||"").trim().replace("レーサ加工","レザー加工").replace("外作加工","外注加工/組立");
-const chip=(txt,tone="#f1f5f9",icon="fa-regular fa-square")=>`<span class="chip" style="background:${tone}"><i class="${icon}"></i>${txt||"—"}</span>`;
-const procChip=(p)=>{p=normalizeProc(p); if(/レザー/.test(p))return chip(p,"#fef3c7","fa-solid fa-bolt");
-  if(/曲げ/.test(p))return chip(p,"#e0f2fe","fa-solid fa-wave-square");
-  if(/外注|加工/.test(p))return chip(p,"#e2e8f0","fa-solid fa-industry");
-  if(/組立/.test(p))return chip(p,"#e9d5ff","fa-solid fa-screwdriver-wrench");
-  if(/検査中/.test(p))return chip(p,"#fde68a","fa-regular fa-clipboard");
-  if(/検査済/.test(p))return chip(p,"#dcfce7","fa-regular fa-square-check");
-  if(/出荷/.test(p))return chip(p,"#cffafe","fa-solid fa-truck"); return chip(p); };
-const statusChip=(s)=>{ if(/出荷済/.test(s||""))return chip(s,"#dcfce7","fa-solid fa-truck");
-  if(/進行|WIP|作業中/.test(s||""))return chip(s,"#e0f2fe","fa-regular fa-clock");
-  if(/停止|中断/.test(s||""))return chip(s,"#fee2e2","fa-solid fa-triangle-exclamation");
-  if(/完了|検査済/.test(s||""))return chip(s,"#dcfce7","fa-regular fa-circle-check"); return chip(s||""); };
-
-/* ========= DASHBOARD ========= */
-let ORDERS=[]; const tbOrders=$("#tbOrders");
-function showSkeleton(container, rows=8, cols=9){
-  container.innerHTML="";
-  const frag=document.createDocumentFragment();
-  for(let i=0;i<rows;i++){ const tr=document.createElement("tr");
-    for(let j=0;j<cols;j++){ const td=document.createElement("td"); td.innerHTML=`<div class="skl"></div>`; tr.appendChild(td); }
-    frag.appendChild(tr);
-  } container.appendChild(frag);
-}
-async function refreshDashboard(){
-  setBusy($("#pageDash"),true); showSkeleton(tbOrders,8,9);
+/* ====== Weather (kecil, cache 30m) ====== */
+async function ensureWeather(){
   try{
-    ORDERS = await cached("listOrders",{},30000);
-    renderOrders(); drawDashChart(ORDERS);
-  }catch(err){ alert("読み込み失敗: "+err.message); }
-  finally{ setBusy($("#pageDash"),false); }
+    const key='wx_cache_v1', now=Date.now();
+    const hit=JSON.parse(localStorage.getItem(key)||'null');
+    if(hit && (now-hit.t)<30*60*1000){ renderWeather(hit.v); return; }
+    let lat=35.6762, lon=139.6503;
+    if(navigator.geolocation){
+      await new Promise(res=> navigator.geolocation.getCurrentPosition(
+        pos=>{ lat=pos.coords.latitude; lon=pos.coords.longitude; res(); },
+        ()=>res(), {maximumAge:600000,timeout:1500}
+      ));
+    }
+    const v=await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code,wind_speed_10m&timezone=auto`).then(r=>r.json());
+    localStorage.setItem(key,JSON.stringify({v,t:now})); renderWeather(v);
+  }catch(_){}
 }
-$("#searchQ")?.addEventListener("input", debounce(renderOrders,250));
+function renderWeather(v){ if(!v?.current) return;
+  $("#wxTemp").textContent=Math.round(v.current.temperature_2m)+"°C";
+  $("#wxWind").textContent=Math.round(v.current.wind_speed_10m)+" m/s";
+  $("#wxPlace").textContent=v.timezone_abbreviation||"";
+}
+
+/* ====== Dashboard ====== */
+let ORDERS=[];
+const normalizeProc=(s)=> String(s||"").trim().replace("レーサ加工","レザー加工").replace("外作加工","外注加工/組立");
+function chip(h){ return `<span class="chip">${h}</span>`; }
+function stBadge(s){ s=String(s||"");
+  if(/出荷済/.test(s)) return chip('<i class="fa-solid fa-truck"></i>出荷済');
+  if(/検査済/.test(s)) return chip('<i class="fa-regular fa-circle-check"></i>検査済');
+  if(/検査中/.test(s)) return chip('<i class="fa-regular fa-clipboard"></i>検査中');
+  return chip('<i class="fa-regular fa-clock"></i>'+(s||'—'));
+}
+function pcBadge(p){ p=normalizeProc(p);
+  if(/レザー/.test(p)) return chip('<i class="fa-solid fa-bolt"></i>レザー');
+  if(/曲げ/.test(p)) return chip('<i class="fa-solid fa-wave-square"></i>曲げ');
+  if(/組立/.test(p)) return chip('<i class="fa-solid fa-screwdriver-wrench"></i>組立');
+  if(/検査/.test(p)) return chip('<i class="fa-regular fa-square-check"></i>検査');
+  return chip(p||'—');
+}
+function fmtTime(d){ return d? new Date(d).toLocaleString("ja-JP"):""; }
+async function refreshDashboard(){
+  const tb=$("#tbOrders"); skeletonRows(tb,9,8);
+  try{ ORDERS=await cached("listOrders",{},8000); renderOrders(); }catch(_){ tb.innerHTML=""; }
+}
+$("#searchQ")?.addEventListener("input",debounce(renderOrders,250));
 function renderOrders(){
-  const q = ($("#searchQ")?.value||"").toLowerCase();
-  const rows = ORDERS.filter(r=> !q || JSON.stringify(r).toLowerCase().includes(q));
-  tbOrders.innerHTML="";
+  const tb=$("#tbOrders"); if(!tb) return;
+  const q=($("#searchQ")?.value||"").toLowerCase();
+  const rows=ORDERS.filter(r=> !q || JSON.stringify(r).toLowerCase().includes(q));
+  tb.innerHTML="";
   const frag=document.createDocumentFragment();
   rows.forEach(r=>{
     const tr=document.createElement("tr");
     tr.innerHTML=`
       <td><div class="s muted">注番</div><div><b>${r.po_id||""}</b></div><div class="s muted">${r["得意先"]||"—"}</div></td>
-      <td>${r["品名"]||"—"}</td><td>${r["品番"]||"—"}</td><td>${r["図番"]||"—"}</td>
-      <td>${statusChip(r.status)}</td>
-      <td><div class="wrap">${procChip(r.current_process)}<span class="chip" style="background:#e2fbe2">OK: ${numJP(r.ok_count||0)}</span><span class="chip" style="background:#fee2e2">NG: ${numJP(r.ng_count||0)}</span></div></td>
-      <td>${fmtTime(r.updated_at)}</td><td>${r.updated_by||"—"}</td>
-      <td><div class="wrap">
-        <button class="btn s ghost" data-act="qr" data-po="${r.po_id}"><i class="fa-solid fa-qrcode"></i> 工程QR</button>
-        <button class="btn s ghost" data-act="scan" data-po="${r.po_id}"><i class="fa-solid fa-camera"></i> スキャン</button>
-        <button class="btn s" data-act="op" data-po="${r.po_id}"><i class="fa-regular fa-keyboard"></i> 手入力</button>
-        <button class="btn s ghost" data-act="his" data-po="${r.po_id}"><i class="fa-regular fa-clock"></i> 履歴</button>
-      </div></td>`;
+      <td>${r["品名"]||"—"}</td>
+      <td>${r["品番"]||"—"}</td>
+      <td>${r["図番"]||"—"}</td>
+      <td class="center">${stBadge(r.status)}</td>
+      <td class="center">
+        <div class="row">${pcBadge(r.current_process)}
+          <span class="chip" style="background:#e2fbe2">OK:${r.ok_count||0}</span>
+          <span class="chip" style="background:#ffe4e6">NG:${r.ng_count||0}</span>
+        </div>
+      </td>
+      <td class="center">${fmtTime(r.updated_at)}</td>
+      <td class="center">${r.updated_by||"—"}</td>
+      <td class="center">
+        <button class="btn s" data-po="${r.po_id}" data-act="op"><i class="fa-regular fa-keyboard"></i> 手入力</button>
+      </td>`;
     frag.appendChild(tr);
   });
-  tbOrders.appendChild(frag);
+  tb.appendChild(frag);
+  tb.onclick=(e)=>{
+    const b=e.target.closest("button"); if(!b) return;
+    if(b.dataset.act==='op') openOpDialog(b.dataset.po);
+  };
 }
-$("#btnExportOrders")?.addEventListener("click", ()=>{
-  const head=["注番","得意先","品名","品番","図番","状態","工程","OK","NG","更新","更新者"];
-  const rows=ORDERS.map(r=>[r.po_id||"",r["得意先"]||"",r["品名"]||"",r["品番"]||"",r["図番"]||"",r.status||"",r.current_process||"",r.ok_count||0,r.ng_count||0,fmtTime(r.updated_at),r.updated_by||""]);
-  exportXlsx("DashboardOrders", head, rows);
-});
-async function showHistory(po){
-  try{
-    const h = await jsonp("history",{ po_id: po });
-    if(!h?.length) return alert("履歴なし");
-    alert(h.map(x=> `${fmtTime(x.timestamp)}｜${x.updated_by||""}｜${x.new_process||""}｜OK:${x.ok_count||0} NG:${x.ng_count||0}｜${x.note||""}`).join("\n"));
-  }catch(err){ alert("履歴取得失敗: "+err.message); }
-}
-tbOrders?.addEventListener("click",(e)=>{
-  const b=e.target.closest("button"); if(!b) return;
-  const po=b.dataset.po; if(b.dataset.act==="op") openOpDialog(po);
-  if(b.dataset.act==="his") showHistory(po);
-  if(b.dataset.act==="scan") openScanDialog(po);
-  if(b.dataset.act==="qr") openStationQrSheet(po);
-});
 
-/* ========= OP DIALOG ========= */
-const PROC_LIST=["準備","レザー加工","曲げ加工","外注加工/組立","組立","検査工程","検査中","検査済","出荷準備","出荷済"];
-$("#btnOpCancel")?.addEventListener("click",()=> $("#dlgOp").close());
-function openOpDialog(po){
-  $("#opPO").textContent=po;
-  $("#opProcess").innerHTML = PROC_LIST.map(x=>`<option>${x}</option>`).join("");
-  $("#opOK").value=0; $("#opNG").value=0; $("#opNote").value="";
-  $("#dlgOp").showModal();
-}
-$("#btnOpSave")?.addEventListener("click", async ()=>{
-  try{
-    const po=$("#opPO").textContent.trim();
-    const data={ po_id:po, process:$("#opProcess").value, ok_count:Number($("#opOK").value||0), ng_count:Number($("#opNG").value||0), status:"", note:$("#opNote").value||"" };
-    await jsonp("saveOp",{ data: JSON.stringify(data), user: JSON.stringify(CURRENT_USER||{}) });
-    $("#dlgOp").close(); bust("listOrders"); refreshDashboard();
-  }catch(err){ alert("保存失敗: "+err.message); }
-});
-
-/* ========= GENERIC SHEET LOADERS ========= */
+/* ====== Generic table builder ====== */
 function buildTable(th, tb, data){
-  th.innerHTML = `<tr>${data.header.map(h=>`<th>${h}</th>`).join("")}</tr>`;
-  tb.innerHTML = data.rows.map(r=> `<tr>${r.map(v=> `<td>${(v instanceof Date)?fmtDate(v): (v??"")}</td>`).join("")}</tr>`).join("");
+  th.innerHTML=`<tr>${data.header.map(h=>`<th>${h}</th>`).join("")}</tr>`;
+  tb.innerHTML=data.rows.map(r=> `<tr>${r.map(v=>`<td>${v instanceof Date ? v.toLocaleString("ja-JP") : (v??"")}</td>`).join("")}</tr>`).join("");
 }
 function filterTable(qEl, bodyEl){
   const q=(qEl.value||"").toLowerCase();
   [...bodyEl.children].forEach(tr=> tr.style.display = tr.textContent.toLowerCase().includes(q) ? "" : "none");
 }
-function exportSheet(name, head, rows){ exportXlsx(name, head, rows); }
 
-async function loadSales(){ setBusy($("#pageSales"),true); showSkeleton($("#tbSales"),8,8);
-  try{ const s=await cached("listSales",{},30000); buildTable($("#thSales"),$("#tbSales"),s);
-    $("#salesSearch").oninput=()=> filterTable($("#salesSearch"), $("#tbSales"));
-    $("#btnSalesExport").onclick=()=> exportSheet("SalesOrders",s.header,s.rows);
-  }finally{ setBusy($("#pageSales"),false); } }
-async function loadPlans(){ setBusy($("#pagePlan"),true); showSkeleton($("#tbPlan"),8,8);
-  try{ const s=await cached("listPlans",{},30000); buildTable($("#thPlan"),$("#tbPlan"),s);
-    $("#planSearch").oninput=()=> filterTable($("#planSearch"), $("#tbPlan"));
-    $("#btnPlanExport").onclick=()=> exportSheet("ProductionOrders",s.header,s.rows);
-  }finally{ setBusy($("#pagePlan"),false); } }
-async function loadShips(){ setBusy($("#pageShip"),true); showSkeleton($("#tbShip"),8,8);
-  try{ const s=await cached("listShip",{},30000); buildTable($("#thShip"),$("#tbShip"),s);
-    $("#shipSearch").oninput=()=> filterTable($("#shipSearch"), $("#tbShip"));
-    $("#btnShipExport").onclick=()=> exportSheet("Shipments",s.header,s.rows);
-  }finally{ setBusy($("#pageShip"),false); } }
-async function loadFinished(){ setBusy($("#pageFinished"),true); showSkeleton($("#tbFin"),8,8);
-  try{ const s=await cached("listFinished",{},30000); buildTable($("#thFin"),$("#tbFin"),s);
-    $("#finSearch").oninput=()=> filterTable($("#finSearch"), $("#tbFin"));
-    $("#btnFinExport").onclick=()=> exportSheet("FinishedGoods",s.header,s.rows);
-  }finally{ setBusy($("#pageFinished"),false); } }
-async function loadInventory(){ setBusy($("#pageInv"),true); showSkeleton($("#tbInv"),8,8);
-  try{ const s=await cached("listInventory",{},30000); buildTable($("#thInv"),$("#tbInv"),s);
-    $("#invSearch").oninput=()=> filterTable($("#invSearch"), $("#tbInv"));
-    $("#btnInvExport").onclick=()=> exportSheet("Inventory",s.header,s.rows);
-  }finally{ setBusy($("#pageInv"),false); } }
+/* ====== CRUD — SALES ====== */
+async function loadSales(){ const tb=$("#tbSales"); skeletonRows(tb,8,8);
+  const s=await cached("listSales",{},12000); buildTable($("#thSales"),tb,s);
+  $("#salesSearch").oninput=()=> filterTable($("#salesSearch"), tb);
+  $("#btnSalesExport").onclick=()=> exportXlsx("SalesOrders",s.header,s.rows);
+  // contoh save (Add/Edit) → bentuk json sesuai header
+  $("#btnSalesAdd")?.addEventListener("click", async ()=>{
+    const po=prompt("po_id / 注番?"); if(!po) return;
+    const data={ po_id:po, customer:prompt("得意先?")||"", item_name:prompt("品名?")||"", part_no:prompt("品番?")||"", drawing_no:prompt("図番?")||"" };
+    await jsonp("saveSales",{ data:JSON.stringify(data), user:JSON.stringify(CURRENT_USER||{})}); await loadSales();
+  });
+  $("#btnSalesDelete")?.addEventListener("click", async ()=>{
+    const po=prompt("Hapus PO (po_id) ?"); if(!po) return;
+    await jsonp("deleteSales",{ po_id:po }); await loadSales();
+  });
+}
 
-/* ========= INVOICE ========= */
+/* ====== CRUD — PLAN ====== */
+async function loadPlans(){ const tb=$("#tbPlan"); skeletonRows(tb,8,8);
+  const s=await cached("listPlans",{},12000); buildTable($("#thPlan"),tb,s);
+  $("#planSearch").oninput=()=> filterTable($("#planSearch"), tb);
+  $("#btnPlanExport").onclick=()=> exportXlsx("ProductionOrders",s.header,s.rows);
+  $("#btnPlanAdd")?.addEventListener("click", async ()=>{
+    const po=prompt("po_id?"); if(!po) return;
+    const data={ po_id:po, customer:prompt("得意先?")||"", item_name:prompt("品名?")||"", current_process:"準備", status:"進行" };
+    await jsonp("savePlan",{ data:JSON.stringify(data), user:JSON.stringify(CURRENT_USER||{})}); await loadPlans(); refreshDashboard();
+  });
+}
+
+/* ====== CRUD — SHIP ====== */
+async function loadShips(){ const tb=$("#tbShip"); skeletonRows(tb,8,8);
+  const s=await cached("listShip",{},12000); buildTable($("#thShip"),tb,s);
+  $("#shipSearch").oninput=()=> filterTable($("#shipSearch"), tb);
+  $("#btnShipExport").onclick=()=> exportXlsx("Shipments",s.header,s.rows);
+  $("#btnShipAdd")?.addEventListener("click", async ()=>{
+    const po=prompt("po_id?"); if(!po) return;
+    const data={ po_id:po, destination:prompt("送り先?")||"", qty:Number(prompt("数量?")||0)||0, 単価:Number(prompt("単価?")||0)||0, status:"予定" };
+    await jsonp("saveShip",{ data:JSON.stringify(data), user:JSON.stringify(CURRENT_USER||{})}); await loadShips();
+  });
+  $("#btnShipDelete")?.addEventListener("click", async ()=>{
+    const po=prompt("po_id? (hapus entry yang belum 出荷済)"); if(!po) return;
+    await jsonp("deleteShip",{ po_id:po }); await loadShips();
+  });
+}
+
+/* ====== FINISHED & INVENTORY (read + export) ====== */
+async function loadFinished(){ const tb=$("#tbFin"); skeletonRows(tb,8,8);
+  const s=await cached("listFinished",{},12000); buildTable($("#thFin"),tb,s);
+  $("#finSearch").oninput=()=> filterTable($("#finSearch"), tb);
+  $("#btnFinExport").onclick=()=> exportXlsx("FinishedGoods",s.header,s.rows);
+}
+async function loadInventory(){ const tb=$("#tbInv"); skeletonRows(tb,8,8);
+  const s=await cached("listInventory",{},12000); buildTable($("#thInv"),tb,s);
+  $("#invSearch").oninput=()=> filterTable($("#invSearch"), tb);
+  $("#btnInvExport").onclick=()=> exportXlsx("Inventory",s.header,s.rows);
+}
+
+/* ====== INVOICE ====== */
 async function initInvoicePage(){
-  setBusy($("#pageInvoice"),true);
-  try{
-    const m = await cached("listMasters",{},300000);
-    const sel=$("#invoiceCustomer");
-    sel.innerHTML = `<option value="">(得意先を選択)</option>` + (m.customers||[]).map(c=>`<option>${c}</option>`).join("");
-    sel.onchange = reloadInvoiceCandidates;
-    $("#invoiceDate").value = new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,10);
-    $("#btnInvoiceReload").onclick = async ()=>{ await reloadInvoiceCandidates(); await reloadInvoiceList(); };
-    $("#btnInvoiceSave").onclick   = saveInvoice;
-    $("#btnInvoiceXlsx").onclick   = exportInvoiceExcel;
-    $("#btnInvoicePdf").onclick    = printInvoiceHTML;
-    await reloadInvoiceCandidates(); await reloadInvoiceList();
-  }catch(err){ alert("請求書画面の初期化に失敗: "+err.message); }
-  finally{ setBusy($("#pageInvoice"),false); }
+  const sel=$("#invoiceCustomer");
+  const m=await cached("listMasters",{},60000);
+  sel.innerHTML=`<option value="">(得意先を選択)</option>`+(m.customers||[]).map(c=>`<option>${c}</option>`).join("");
+  $("#invoiceDate").value=new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,10);
+  $("#btnInvoiceReload").onclick=async()=>{ await reloadInvoiceCandidates(); await reloadInvoiceList(); };
+  $("#btnInvoiceSave").onclick=saveInvoice; $("#btnInvoiceXlsx").onclick=exportInvoiceExcel; $("#btnInvoicePdf").onclick=printInvoiceHTML;
+  await reloadInvoiceCandidates(); await reloadInvoiceList();
 }
 async function reloadInvoiceCandidates(){
-  const cust=$("#invoiceCustomer").value||""; const tbC=$("#tbInvoiceCandidates"); const tbS=$("#tbInvoiceStatus");
+  const cust=$("#invoiceCustomer").value||""; const tbC=$("#tbInvoiceCandidates"), tbS=$("#tbInvoiceStatus");
   tbC.innerHTML=""; tbS.innerHTML="";
   if(!cust) return;
-  const data = await jsonp("invoiceCandidates",{ customer: cust });
+  const data=await jsonp("invoiceCandidates",{customer:cust});
   const money=(n)=> Number(n||0).toLocaleString("ja-JP");
   (data.pending||[]).forEach(r=>{
     const tr=document.createElement("tr");
@@ -267,11 +320,11 @@ async function reloadInvoiceCandidates(){
   });
 }
 async function reloadInvoiceList(){
-  const list = await cached("listInvoices",{},60000);
+  const list=await cached("listInvoices",{},15000);
   const tb=$("#tbInvoiceList"); tb.innerHTML="";
   (list||[]).forEach(o=>{
     const tr=document.createElement("tr");
-    tr.innerHTML=`<td>${o.invoice_id||''}</td><td>${o.customer||''}</td><td>${fmtDate(o.issue_date)||''}</td><td>${numJP(o.total||0)}</td><td>${o.filename||''}</td><td>${o.created_by||''}</td>`;
+    tr.innerHTML=`<td>${o.invoice_id||''}</td><td>${o.customer||''}</td><td>${(o.issue_date? new Date(o.issue_date).toLocaleDateString("ja-JP"):"")}</td><td>${Number(o.total||0).toLocaleString("ja-JP")}</td><td>${o.filename||''}</td><td>${o.created_by||''}</td>`;
     tb.appendChild(tr);
   });
 }
@@ -279,73 +332,86 @@ async function saveInvoice(){
   const cust=$("#invoiceCustomer").value||""; if(!cust) return alert("得意先を選択してください");
   const issue_date=$("#invoiceDate").value || new Date().toISOString().slice(0,10);
   const items=[...$("#tbInvoiceCandidates").querySelectorAll("input.pick:checked")].map(ch=>({
-    ship_id: ch.dataset.sid||'', po_id: ch.dataset.po||'',
-    数量: Number(ch.dataset.qty||0)||0, 単価:Number(ch.dataset.unit||0)||0, 金額:Number(ch.dataset.price||0)||0,
-    商品名: ch.dataset.item||'', 品番: ch.dataset.part||'', 出荷日: ch.dataset.ship||''
+    ship_id:ch.dataset.sid||'', po_id:ch.dataset.po||'', 数量:Number(ch.dataset.qty||0)||0, 単価:Number(ch.dataset.unit||0)||0, 金額:Number(ch.dataset.price||0)||0,
+    商品名:ch.dataset.item||'', 品番:ch.dataset.part||'', 出荷日:ch.dataset.ship||''
   }));
   if(!items.length) return alert("明細を選択してください");
-  try{
-    await jsonp("createInvoice",{ data: JSON.stringify({ customer:cust, issue_date, items }), user: JSON.stringify(CURRENT_USER||{}) });
-    alert("請求書を作成しました"); bust("listInvoices"); await reloadInvoiceCandidates(); await reloadInvoiceList();
-  }catch(err){ alert("作成失敗: "+err.message); }
+  await jsonp("createInvoice",{ data:JSON.stringify({customer:cust, issue_date, items}), user:JSON.stringify(CURRENT_USER||{}) });
+  alert("請求書を作成しました"); await reloadInvoiceCandidates(); await reloadInvoiceList();
 }
 function exportInvoiceExcel(){
   const rows=[...$("#tbInvoiceCandidates tr")].filter(tr=> tr.querySelector(".pick:checked")).map(tr=> [...tr.children].slice(1).map(td=> td.textContent));
   if(!rows.length) return alert("エクスポート対象がありません");
-  const header=["注番","商品名","品番","数量","単価","金額","出荷日"]; exportXlsx("請求書明細", header, rows);
+  exportXlsx("請求書明細",["注番","商品名","品番","数量","単価","金額","出荷日"],rows);
 }
 function printInvoiceHTML(){
-  const cust=$("#invoiceCustomer").value||"—"; const date=$("#invoiceDate").value||new Date().toISOString().slice(0,10);
+  const cust=$("#invoiceCustomer").value||"—", date=$("#invoiceDate").value||new Date().toISOString().slice(0,10);
   const rows=[...$("#tbInvoiceCandidates tr")].filter(tr=> tr.querySelector(".pick:checked")).map(tr=> [...tr.children].slice(1).map(td=> td.textContent));
   if(!rows.length) return alert("印刷対象がありません");
-  const total=rows.reduce((s,r)=> s + (Number((r[5]||"").replace(/,/g,"")) || (Number(r[3]||0)*Number(r[4]||0))), 0);
+  const total=rows.reduce((s,r)=> s+(Number((r[5]||"").replace(/,/g,"")) || (Number(r[3]||0)*Number(r[4]||0))),0);
   const html=`<html><head><meta charset="utf-8"><title>請求書</title>
   <style>body{font-family:"Noto Sans JP",system-ui,Arial;padding:20px}table{width:100%;border-collapse:collapse;font-size:12px}th,td{border:1px solid #ddd;padding:6px}th{background:#f6f7fb}.r{text-align:right}</style>
-  </head><body><h2>請求書</h2><div>得意先: <b>${cust}</b></div><div>発行日: ${fmtDate(date)}</div>
+  </head><body><h2>請求書</h2><div>得意先: <b>${cust}</b></div><div>発行日: ${new Date(date).toLocaleDateString("ja-JP")}</div>
   <table><tr><th>注番</th><th>商品名</th><th>品番</th><th>数量</th><th>単価</th><th>金額</th><th>出荷日</th></tr>
   ${rows.map(r=> `<tr>${r.map((c,i)=> `<td class="${i>=3?'r':''}">${c||''}</td>`).join('')}</tr>`).join('')}
-  <tr><td colspan="5" class="r"><b>合計</b></td><td class="r"><b>${numJP(total)}</b></td><td></td></tr></table>
+  <tr><td colspan="5" class="r"><b>合計</b></td><td class="r"><b>${total.toLocaleString("ja-JP")}</b></td><td></td></tr></table>
   <script>window.print()</script></body></html>`;
   const w=window.open("about:blank"); w.document.write(html); w.document.close();
 }
 
-/* ========= QR SCAN ========= */
-const dlgScan=$("#dlgScan"), video=$("#scanVideo"), canvas=$("#scanCanvas"); let stream=null, timer=null;
-function openScanDialog(){ dlgScan.showModal(); }
-$("#btnScanStart").onclick= startScan; $("#btnScanClose").onclick= stopScan;
-async function startScan(){
-  try{ stream=await navigator.mediaDevices.getUserMedia({ video:{ facingMode:"environment" }});
-    video.srcObject=stream; await video.play(); timer=setInterval(captureAndDecode,250);
-  }catch(err){ alert("カメラ不可: "+err.message); }
+/* ====== Dialog Operasi ====== */
+const PROCESS_OPTIONS=[ "準備","レザー加工","曲げ加工","外注加工/組立","組立","検査工程","検査中","検査済","出荷（組立済）","出荷準備","出荷済" ];
+function openOpDialog(po,defaults={}){
+  $("#opPO").textContent=po;
+  const sel=$("#opProcess");
+  sel.innerHTML=PROCESS_OPTIONS.map(o=>`<option>${o}</option>`).join("");
+  $("#opProcess").value=defaults.process||PROCESS_OPTIONS[0];
+  $("#opOK").value=defaults.ok_count??defaults.ok??0;
+  $("#opNG").value=defaults.ng_count??defaults.ng??0;
+  $("#opNote").value=defaults.note||"";
+  $("#dlgOp").showModal();
+  $("#btnOpSave").onclick=async()=>{
+    const ok=Number($("#opOK").value||0), ng=Number($("#opNG").value||0), proc=$("#opProcess").value;
+    if(ok<0||ng<0) return alert("OK/NG は 0 以上で");
+    await jsonp("saveOp",{ data:JSON.stringify({ po_id:po, process:proc, ok_count:ok, ng_count:ng, note:$("#opNote").value }), user:JSON.stringify(CURRENT_USER||{}) });
+    $("#dlgOp").close(); await refreshDashboard();
+  };
 }
-function stopScan(){
-  if(timer) clearInterval(timer), timer=null; if(stream){ stream.getTracks().forEach(t=> t.stop()); stream=null; }
-  $("#scanResult").textContent="—"; dlgScan.close();
-}
-function captureAndDecode(){
-  const w=video.videoWidth,h=video.videoHeight; if(!w||!h) return;
-  canvas.width=w; canvas.height=h; const ctx=canvas.getContext("2d"); ctx.drawImage(video,0,0,w,h);
-  const img=ctx.getImageData(0,0,w,h); const code=jsQR(img.data,w,h);
-  if(code && code.data){ $("#scanResult").textContent=code.data; const m=/PO[:：]\s*([A-Za-z0-9\-_/]+)/.exec(code.data)||/([A-Za-z0-9]{4,})/.exec(code.data);
-    if(m){ stopScan(); openOpDialog(m[1]); } }
-}
+$("#btnOpCancel")?.addEventListener("click",()=> $("#dlgOp").close());
 
-/* ========= CHARTS ========= */
-let dashChart=null;
-function drawDashChart(rows){
-  const map={}; rows.forEach(r=>{ const s=r.status||"—"; map[s]=(map[s]||0)+1; });
-  const labels=Object.keys(map), data=Object.values(map);
-  const ctx=$("#chartDash"); if(!ctx) return;
-  if(dashChart) dashChart.destroy();
-  dashChart=new Chart(ctx,{ type:"bar", data:{ labels, datasets:[{label:"件数", data}]}, options:{ plugins:{legend:{display:false}}, scales:{y:{beginAtZero:true}} }});
-}
+/* ====== Add Member (Admin) ====== */
+$("#btnAddUser")?.addEventListener("click",()=>{
+  if(!CURRENT_USER || CURRENT_USER.role!=='admin') return alert("Hanya admin");
+  $("#uUsername").value=""; $("#uPassword").value=""; $("#uFull").value="";
+  $("#uDept").value=""; $("#uRole").value="member"; $("#uActive").value="TRUE";
+  $("#dlgAddUser").showModal();
+});
+$("#btnUserCancel")?.addEventListener("click",()=> $("#dlgAddUser").close());
+$("#btnUserSave")?.addEventListener("click", async ()=>{
+  const row={ username:$("#uUsername").value.trim(), password:$("#uPassword").value, full_name:$("#uFull").value.trim(),
+    department:$("#uDept").value.trim(), role:$("#uRole").value.trim()||'member', is_active:$("#uActive").value||'TRUE'
+  };
+  if(!row.username||!row.password) return alert("Username/Password wajib diisi");
+  await jsonp("saveUser",{ data:JSON.stringify(row), user:JSON.stringify(CURRENT_USER||{}) },9000);
+  alert("User ditambahkan"); $("#dlgAddUser").close();
+});
 
-/* ========= XLSX ========= */
+/* ====== XLSX ====== */
 function exportXlsx(name, head, rows){
-  const ws=XLSX.utils.aoa_to_sheet([head, ...rows]);
-  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+  const ws=XLSX.utils.aoa_to_sheet([head,...rows]); const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,"Sheet1");
   XLSX.writeFile(wb, `${name}_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 
-/* ========= BOOT ========= */
-document.addEventListener("DOMContentLoaded", ()=> { setUser(null); });
+/* ====== NAV ====== */
+$("#btnToDash")?.addEventListener("click",()=>{ show("pageDash"); refreshDashboard(); });
+$("#btnToSales")?.addEventListener("click",()=>{ show("pageSales"); loadSales(); });
+$("#btnToPlan") ?.addEventListener("click",()=>{ show("pagePlan");  loadPlans(); });
+$("#btnToShip") ?.addEventListener("click",()=>{ show("pageShip");  loadShips(); });
+$("#btnToFinPage")?.addEventListener("click",()=>{ show("pageFinished"); loadFinished(); });
+$("#btnToInvPage")?.addEventListener("click",()=>{ show("pageInv"); loadInventory(); });
+$("#btnToInvoice")?.addEventListener("click",()=>{ show("pageInvoice"); initInvoicePage(); });
+$("#btnToAnalytics")?.addEventListener("click",()=>{ show("pageAnalytics"); });
+
+/* ====== Boot ====== */
+document.addEventListener("DOMContentLoaded",()=>{ initTheme(); setUser(null); });
