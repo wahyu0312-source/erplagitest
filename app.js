@@ -1,18 +1,12 @@
 /* ============================================================
-  TSH ERP Frontend — FULL (FIXED)
+  TSH ERP Frontend — FULL (FIXED v2)
+  - Hilangkan assignment pakai optional chaining (?.) → pakai guard
   - Polyfill requestIdleCallback (tanpa ||=)
-  - Login/Logout + Role-based nav
-  - Dashboard (Orders) chunked render & export CSV
-  - 受注 / 生産計画 / 出荷予定 / 完成品一覧 / 在庫
-  - 請求書 (list + draft + save)
-  - 分析チャート (Chart.js)
-  - QR Scan (jsQR) + Save Operation
-  - Admin > Add Member Baru
-  - Weather badge (dummy)
+  - Semua fitur: Login/Logout, Dashboard, 受注, 生産計画, 出荷予定,
+    完成品一覧, 在庫, 請求書, 分析, QR Scan, Admin Add Member
 ============================================================ */
 
 /* ================== CONFIG ================== */
-// GANTI ke URL Web App Apps Script Anda:
 const API_BASE = "https://script.google.com/macros/s/AKfycbyFPilRpjXxKVlM2Av2LunQJAIJszz9wNX0j1Ab1pbWkZeecIx_QNZwoKQR6XCNGYSLGA/exec";
 
 /* ================== DOM HELPERS ================== */
@@ -22,9 +16,19 @@ const qs = (o)=> Object.entries(o).map(([k,v])=>`${encodeURIComponent(k)}=${enco
 const fmt= (d)=> d? new Date(d).toLocaleString("ja-JP"):"";
 const sleep = (ms)=> new Promise(r=>setTimeout(r,ms));
 
-/* Polyfill aman (tanpa ||=) */
+/* Polyfill aman */
 if (typeof window.requestIdleCallback !== "function") {
   window.requestIdleCallback = (cb)=> setTimeout(cb, 0);
+}
+
+/* Helper aman untuk set onclick tanpa optional chaining */
+function setOnClick(selector, handler){
+  const el = $(selector);
+  if(el) el.onclick = handler;
+}
+function addEvt(selector, evt, handler){
+  const el = $(selector);
+  if(el) el.addEventListener(evt, handler);
 }
 
 /* ================== JSONP & CACHE ================== */
@@ -62,7 +66,7 @@ let FINISHED = [];
 let INVENTORY = [];
 let INVOICES = [];
 let MASTERS = { customers:[], drawings:[], item_names:[], part_nos:[], destinations:[], carriers:[], po_ids:[] };
-let CHARTS = {}; // simpan instance Chart.js
+let CHARTS = {};
 
 const ROLE_MAP = {
   'admin': { pages:['pageDash','pageSales','pagePlan','pageShip','pageFinished','pageInv','pageInvoice','pageAnalytics'], nav:true },
@@ -81,14 +85,14 @@ function setUser(u){
 
   // Reset vis
   const buttons = ['btnToDash','btnToSales','btnToPlan','btnToShip','btnToFinPage','btnToInvPage','btnToInvoice','btnToAnalytics'];
-  buttons.forEach(id=> $("#"+id)?.classList.add("hidden"));
-  $("#btnLogout")?.classList.toggle("hidden", !u);
-  $("#weatherWrap")?.classList.toggle("hidden", !u);
-  $("#btnAddMember")?.classList.add("hidden");
+  buttons.forEach(id=> $("#"+id) && $("#"+id).classList.add("hidden"));
+  if($("#btnLogout")) $("#btnLogout").classList.toggle("hidden", !u);
+  if($("#weatherWrap")) $("#weatherWrap").classList.toggle("hidden", !u);
+  if($("#btnAddMember")) $("#btnAddMember").classList.add("hidden");
 
   // Hide semua pages
   $$("section[id^='page']").forEach(el=> el.classList.add("hidden"));
-  $("#authView")?.classList.toggle("hidden", !!u);
+  if($("#authView")) $("#authView").classList.toggle("hidden", !!u);
 
   if(!u){ return; }
 
@@ -102,50 +106,50 @@ function setUser(u){
     if(allow.pages.includes('pageInv')) $("#btnToInvPage").classList.remove("hidden");
     if(allow.pages.includes('pageInvoice')) $("#btnToInvoice").classList.remove("hidden");
     if(allow.pages.includes('pageAnalytics')) $("#btnToAnalytics").classList.remove("hidden");
-    if(u.role === 'admin') $("#btnAddMember")?.classList.remove("hidden");
+    if(u.role === 'admin' && $("#btnAddMember")) $("#btnAddMember").classList.remove("hidden");
   }
   requestIdleCallback(()=> { ensureWeather(); loadMasters().catch(()=>{}); });
 
-  // First paint: Dash → load
   show("pageDash");
   refreshAll().catch(()=>{});
 }
 function show(id){
   $$("section[id^='page']").forEach(el=> el.classList.add("hidden"));
-  $("#"+id)?.classList.remove("hidden");
+  const sec = $("#"+id); if(sec) sec.classList.remove("hidden");
 }
-$("#btnToDash").onclick = ()=>{ show("pageDash"); refreshAll(); };
-$("#btnToSales").onclick = ()=>{ show("pageSales"); loadSales(); };
-$("#btnToPlan").onclick = ()=>{ show("pagePlan"); loadPlans(); };
-$("#btnToShip").onclick = ()=>{ show("pageShip"); loadShips(); };
-$("#btnToFinPage").onclick = ()=>{ show("pageFinished"); loadFinished(); };
-$("#btnToInvPage").onclick = ()=>{ show("pageInv"); loadInventory(); };
-$("#btnToInvoice").onclick = ()=>{ show("pageInvoice"); initInvoicePage(); };
-$("#btnToAnalytics").onclick = ()=>{ show("pageAnalytics"); initCharts(); };
+setOnClick("#btnToDash", ()=>{ show("pageDash"); refreshAll(); });
+setOnClick("#btnToSales", ()=>{ show("pageSales"); loadSales(); });
+setOnClick("#btnToPlan",  ()=>{ show("pagePlan");  loadPlans(); });
+setOnClick("#btnToShip",  ()=>{ show("pageShip");  loadShips(); });
+setOnClick("#btnToFinPage", ()=>{ show("pageFinished"); loadFinished(); });
+setOnClick("#btnToInvPage",  ()=>{ show("pageInv"); loadInventory(); });
+setOnClick("#btnToInvoice",  ()=>{ show("pageInvoice"); initInvoicePage(); });
+setOnClick("#btnToAnalytics",()=>{ show("pageAnalytics"); initCharts(); });
 
 /* ================== AUTH ================== */
-$("#btnLogin").onclick = loginSubmit;
-$("#inUser")?.addEventListener("keydown", e=>{ if(e.key==='Enter') loginSubmit(); });
-$("#inPass")?.addEventListener("keydown", e=>{ if(e.key==='Enter') loginSubmit(); });
+setOnClick("#btnLogin", loginSubmit);
+addEvt("#inUser","keydown", e=>{ if(e.key==='Enter') loginSubmit(); });
+addEvt("#inPass","keydown", e=>{ if(e.key==='Enter') loginSubmit(); });
 
 async function loginSubmit(){
-  const u = $("#inUser").value.trim();
-  const p = $("#inPass").value.trim();
+  const u = $("#inUser")?.value.trim();
+  const p = $("#inPass")?.value.trim();
   if(!u || !p) return alert("ユーザー名 / パスワード を入力してください");
   try{
     const me = await jsonp("login", { username:u, password:p });
     setUser(me);
-    $("#inUser").value=""; $("#inPass").value="";
-    $("#btnLogout")?.classList.remove("hidden"); // jaga-jaga
+    if($("#inUser")) $("#inUser").value="";
+    if($("#inPass")) $("#inPass").value="";
+    if($("#btnLogout")) $("#btnLogout").classList.remove("hidden");
   }catch(e){
     alert("ログイン失敗: " + (e?.message || e));
   }
 }
-$("#btnLogout").onclick = async ()=>{
+setOnClick("#btnLogout", async ()=>{
   try {
-    $("#dlgScan")?.open && $("#dlgScan").close();
-    $("#dlgOp")?.open && $("#dlgOp").close();
-    $("#dlgAddUser")?.open && $("#dlgAddUser").close();
+    if($("#dlgScan")?.open) $("#dlgScan").close();
+    if($("#dlgOp")?.open) $("#dlgOp").close();
+    if($("#dlgAddUser")?.open) $("#dlgAddUser").close();
   } finally {
     apiCache.clear();
     ORDERS = []; SALES=[]; PLANS=[]; SHIPS=[]; FINISHED=[]; INVENTORY=[]; INVOICES=[];
@@ -153,23 +157,18 @@ $("#btnLogout").onclick = async ()=>{
     Object.values(CHARTS).forEach(ch=> { try{ ch.destroy(); }catch{} }); CHARTS={};
     setUser(null);
   }
-};
+});
 
 /* ================== DASHBOARD (Orders) ================== */
 async function loadOrders(){
-  try{
-    ORDERS = await cached("listOrders",{},15000);
-  }catch(e){
-    ORDERS = [];
-  }
+  try{ ORDERS = await cached("listOrders",{},15000); }catch{ ORDERS = []; }
   renderOrders();
   loadShipsMini().catch(()=>{});
 }
 function renderOrders(){
   const q = ($("#searchQ")?.value||"").trim().toLowerCase();
   const rows = (ORDERS||[]).filter(r => !q || JSON.stringify(r).toLowerCase().includes(q));
-  const tb = $("#tbOrders");
-  if(!tb) return;
+  const tb = $("#tbOrders"); if(!tb) return;
   tb.innerHTML = "";
   const chunk = 120; let i = 0;
   (function paint(){
@@ -220,8 +219,8 @@ function renderOrders(){
     }
   })();
 }
-$("#searchQ")?.addEventListener("input", debounce(renderOrders, 250));
-$("#btnExportOrders")?.addEventListener('click', ()=> exportTableCSV("#tbOrders","orders.csv"));
+addEvt("#searchQ","input", debounce(renderOrders, 250));
+setOnClick("#btnExportOrders", ()=> exportTableCSV("#tbOrders","orders.csv"));
 async function refreshAll(){ await loadOrders(); }
 
 /* ================== HELPERS BADGE/CHIP ================== */
@@ -256,15 +255,15 @@ async function loadSales(){
     "po_id","得意先","品名","品番","図番","status","current_process","ok_count","ng_count","updated_at","updated_by"
   ]);
   attachSearch("#salesSearch","#tbSales");
-  $("#btnSalesExport")?.addEventListener("click", ()=> exportTableCSV("#tbSales","sales.csv"));
-  $("#btnSalesPrint")?.addEventListener("click", ()=> window.print());
-  $("#btnSalesCreate")?.onclick = ()=> openFormDialog("受注 作成", [
+  setOnClick("#btnSalesExport", ()=> exportTableCSV("#tbSales","sales.csv"));
+  setOnClick("#btnSalesPrint", ()=> window.print());
+  setOnClick("#btnSalesCreate", ()=> openFormDialog("受注 作成", [
     {key:"po_id", label:"注番"},
     {key:"得意先", label:"得意先"},
     {key:"品名", label:"品名"},
     {key:"品番", label:"品番"},
     {key:"図番", label:"図番"},
-  ], async ()=>{ alert("デモ: 作成ハンドラはバックエンド未実装"); });
+  ], async ()=>{ alert("デモ: 作成ハンドラはバックエンド未実装"); }));
 }
 
 /* ================== PLANS ================== */
@@ -272,16 +271,16 @@ async function loadPlans(){
   try{ PLANS = await cached("listPlans",{},30000); }catch{ PLANS=[]; }
   renderGenericTable("#thPlan", "#tbPlan", PLANS, ["po_id","工程","開始予定","終了予定","担当","メモ","状態"]);
   attachSearch("#planSearch","#tbPlan");
-  $("#btnPlanExport")?.addEventListener("click", ()=> exportTableCSV("#tbPlan","plans.csv"));
-  $("#btnPlanPrint")?.addEventListener("click", ()=> window.print());
-  $("#btnPlanCreate")?.onclick = ()=> openFormDialog("生産計画 作成", [
+  setOnClick("#btnPlanExport", ()=> exportTableCSV("#tbPlan","plans.csv"));
+  setOnClick("#btnPlanPrint", ()=> window.print());
+  setOnClick("#btnPlanCreate", ()=> openFormDialog("生産計画 作成", [
     {key:"po_id",label:"注番"},
     {key:"工程",label:"工程"},
     {key:"開始予定",label:"開始予定"},
     {key:"終了予定",label:"終了予定"},
     {key:"担当",label:"担当"},
     {key:"メモ",label:"メモ"}
-  ], async ()=>{ alert("デモ: 作成ハンドラはバックエンド未実装"); });
+  ], async ()=>{ alert("デモ: 作成ハンドラはバックエンド未実装"); }));
 }
 
 /* ================== SHIPS ================== */
@@ -289,26 +288,26 @@ async function loadShips(){
   try{ SHIPS = await cached("listShip",{},30000); }catch{ SHIPS=[]; }
   renderGenericTable("#thShip", "#tbShip", SHIPS, ["po_id","得意先","品名","品番","数量","送付先","出荷日","納入日","運送会社","備考","状態"]);
   attachSearch("#shipSearch","#tbShip");
-  $("#btnShipExport")?.addEventListener("click", ()=> exportTableCSV("#tbShip","shipments.csv"));
-  $("#btnShipPrint")?.addEventListener("click", ()=> window.print());
-  $("#btnShipCreate")?.onclick = ()=> openFormDialog("出荷予定 作成", [
+  setOnClick("#btnShipExport", ()=> exportTableCSV("#tbShip","shipments.csv"));
+  setOnClick("#btnShipPrint", ()=> window.print());
+  setOnClick("#btnShipCreate", ()=> openFormDialog("出荷予定 作成", [
     {key:"po_id",label:"注番"},
     {key:"得意先",label:"得意先"},
     {key:"数量",label:"数量"},
     {key:"出荷日",label:"出荷日"},
     {key:"納入先",label:"納入先"}
-  ], async ()=>{ alert("デモ: 作成ハンドラはバックエンド未実装"); });
+  ], async ()=>{ alert("デモ: 作成ハンドラはバックエンド未実装"); }));
 }
 async function loadShipsMini(){
   try{
     const ship = SHIPS.length ? SHIPS : await cached("listShip",{},30000);
     const today = new Date().toISOString().slice(0,10);
     const todayRows = ship.filter(r => String(r['出荷予定日']||r['出荷日']||'').startsWith(today));
-    $("#shipToday").textContent = todayRows.length? `${todayRows.length} 件`: "—";
-    $("#shipPlan").textContent  = ship.length? `${ship.length} 件`: "—";
+    if($("#shipToday")) $("#shipToday").textContent = todayRows.length? `${todayRows.length} 件`: "—";
+    if($("#shipPlan"))  $("#shipPlan").textContent  = ship.length? `${ship.length} 件`: "—";
   }catch(e){
-    $("#shipToday").textContent = "—";
-    $("#shipPlan").textContent  = "—";
+    if($("#shipToday")) $("#shipToday").textContent = "—";
+    if($("#shipPlan"))  $("#shipPlan").textContent  = "—";
   }
 }
 
@@ -317,8 +316,8 @@ async function loadFinished(){
   try{ FINISHED = await cached("listFinished",{},30000); }catch{ FINISHED=[]; }
   renderGenericTable("#thFin","#tbFin",FINISHED,["po_id","得意先","品名","品番","数量","完成日","検査","備考"]);
   attachSearch("#finSearch","#tbFin");
-  $("#btnFinExport")?.addEventListener("click", ()=> exportTableCSV("#tbFin","finished.csv"));
-  $("#btnFinPrint")?.addEventListener("click", ()=> window.print());
+  setOnClick("#btnFinExport", ()=> exportTableCSV("#tbFin","finished.csv"));
+  setOnClick("#btnFinPrint",  ()=> window.print());
 }
 
 /* ================== INVENTORY ================== */
@@ -326,8 +325,8 @@ async function loadInventory(){
   try{ INVENTORY = await cached("listInventory",{},30000); }catch{ INVENTORY=[]; }
   renderGenericTable("#thInv","#tbInv",INVENTORY,["品番","ロット","在庫数","場所","更新日"]);
   attachSearch("#invSearch","#tbInv");
-  $("#btnInvExport")?.addEventListener("click", ()=> exportTableCSV("#tbInv","inventory.csv"));
-  $("#btnInvPrint")?.addEventListener("click", ()=> window.print());
+  setOnClick("#btnInvExport", ()=> exportTableCSV("#tbInv","inventory.csv"));
+  setOnClick("#btnInvPrint",  ()=> window.print());
 }
 
 /* ================== GENERIC TABLE RENDERER ================== */
@@ -366,17 +365,17 @@ function attachSearch(inputSel, tbSel){
 async function initInvoicePage(){
   if(!MASTERS.customers?.length){ try{ await loadMasters(); }catch{} }
   const sel = $("#invoiceCustomer");
-  sel.innerHTML = `<option value="">(得意先を選択)</option>` + (MASTERS.customers||[]).map(c=>`<option>${c}</option>`).join("");
+  if(sel) sel.innerHTML = `<option value="">(得意先を選択)</option>` + (MASTERS.customers||[]).map(c=>`<option>${c}</option>`).join("");
 
   try{ INVOICES = await cached("listInvoices",{},15000); }catch{ INVOICES=[]; }
   renderInvoicesList();
-  $("#btnInvoiceReload").onclick = buildInvoiceCandidates;
-  $("#btnInvoiceSave").onclick = saveInvoice;
-  $("#btnInvoicePdf").onclick  = ()=> alert("PDF出力は端末の印刷機能をご利用ください（またはバックエンド実装が必要）");
-  $("#btnInvoiceXlsx").onclick = ()=> exportTableCSV("#tbInvoiceCandidates","invoice_candidates.csv");
+  setOnClick("#btnInvoiceReload", buildInvoiceCandidates);
+  setOnClick("#btnInvoiceSave",   saveInvoice);
+  setOnClick("#btnInvoicePdf",    ()=> alert("PDF出力は端末の印刷機能をご利用ください（またはバックエンド実装が必要）"));
+  setOnClick("#btnInvoiceXlsx",   ()=> exportTableCSV("#tbInvoiceCandidates","invoice_candidates.csv"));
 }
 function renderInvoicesList(){
-  const tb = $("#tbInvoiceList");
+  const tb = $("#tbInvoiceList"); if(!tb) return;
   tb.innerHTML = "";
   INVOICES.forEach(r=>{
     const tr = document.createElement("tr");
@@ -385,10 +384,11 @@ function renderInvoicesList(){
   });
 }
 async function buildInvoiceCandidates(){
-  const cust = $("#invoiceCustomer").value;
-  const date = $("#invoiceDate").value;
+  const cust = $("#invoiceCustomer")?.value;
+  const date = $("#invoiceDate")?.value;
   const tbCand = $("#tbInvoiceCandidates");
   const tbStat = $("#tbInvoiceStatus");
+  if(!tbCand || !tbStat) return;
   tbCand.innerHTML = ""; tbStat.innerHTML = "";
   if(!SHIPS.length){ try{ SHIPS = await cached("listShip",{},30000); }catch{ SHIPS=[]; } }
 
@@ -428,8 +428,8 @@ async function buildInvoiceCandidates(){
   });
 }
 async function saveInvoice(){
-  const cust = $("#invoiceCustomer").value;
-  const date = $("#invoiceDate").value || new Date().toISOString().slice(0,10);
+  const cust = $("#invoiceCustomer")?.value;
+  const date = $("#invoiceDate")?.value || new Date().toISOString().slice(0,10);
   const chks = $$(".cand-chk:checked");
   if(!cust){ alert("得意先を選択してください"); return; }
   if(!chks.length){ alert("候補を選択してください"); return; }
@@ -496,16 +496,14 @@ async function initCharts(){
 async function loadMasters(){ try{ MASTERS = await cached("listMasters", {}, 60000); }catch{} }
 
 /* ================== QR / OP DIALOGS ================== */
-function openStationQrSheet(){
-  alert("工程QR シートを開きます（実環境のスプレッドシートURLにリンクしてください）");
-}
+function openStationQrSheet(){ alert("工程QR シートを開きます（実環境のスプレッドシートURLにリンクしてください）"); }
 let scanStream=null, scanRAF=null;
 function openScanDialog(po){
-  $("#scanResult").textContent = po ? `注番: ${po}` : "—";
-  $("#dlgScan").showModal();
+  if($("#scanResult")) $("#scanResult").textContent = po ? `注番: ${po}` : "—";
+  if($("#dlgScan")) $("#dlgScan").showModal();
 }
-$("#btnScanClose").onclick = ()=> { stopScan(); $("#dlgScan").close(); };
-$("#btnScanStart").onclick = async ()=>{
+setOnClick("#btnScanClose", ()=> { stopScan(); if($("#dlgScan")) $("#dlgScan").close(); });
+setOnClick("#btnScanStart", async ()=>{
   try{
     stopScan();
     const video = $("#scanVideo"), canvas=$("#scanCanvas"), ctx=canvas.getContext("2d");
@@ -526,100 +524,95 @@ $("#btnScanStart").onclick = async ()=>{
       scanRAF = requestAnimationFrame(loop);
     };
     loop();
-  }catch(e){
-    alert("カメラ起動に失敗: " + (e?.message||e));
-  }
-};
+  }catch(e){ alert("カメラ起動に失敗: " + (e?.message||e)); }
+});
 function stopScan(){
   try{ if(scanRAF) cancelAnimationFrame(scanRAF); }catch{}
   scanRAF=null;
   try{ scanStream?.getTracks()?.forEach(t=> t.stop()); }catch{}
   scanStream=null;
 }
-
 function openOpDialog(po){
-  $("#opPO").textContent = po || "—";
-  $("#opOK").value = 0; $("#opNG").value = 0; $("#opNote").value = "";
+  if($("#opPO")) $("#opPO").textContent = po || "—";
+  if($("#opOK")) $("#opOK").value = 0;
+  if($("#opNG")) $("#opNG").value = 0;
+  if($("#opNote")) $("#opNote").value = "";
   const sel = $("#opProcess");
-  sel.innerHTML = ["切断","レザー加工","曲げ","外注加工/組立","検査","出荷準備","出荷済"].map(x=>`<option>${x}</option>`).join("");
-  $("#dlgOp").showModal();
+  if(sel) sel.innerHTML = ["切断","レザー加工","曲げ","外注加工/組立","検査","出荷準備","出荷済"].map(x=>`<option>${x}</option>`).join("");
+  if($("#dlgOp")) $("#dlgOp").showModal();
 }
-$("#btnOpCancel").onclick = ()=> $("#dlgOp").close();
-$("#btnOpSave").onclick = async ()=>{
+setOnClick("#btnOpCancel", ()=> $("#dlgOp") && $("#dlgOp").close());
+setOnClick("#btnOpSave", async ()=>{
   const payload = {
-    po_id: $("#opPO").textContent,
-    process: $("#opProcess").value,
-    ok: Number($("#opOK").value||0),
-    ng: Number($("#opNG").value||0),
-    note: $("#opNote").value||'',
+    po_id: $("#opPO")?.textContent || "",
+    process: $("#opProcess")?.value || "",
+    ok: Number($("#opOK")?.value||0),
+    ng: Number($("#opNG")?.value||0),
+    note: $("#opNote")?.value||'',
     user: JSON.stringify(CURRENT_USER||{})
   };
   try{
     await jsonp("saveOp", payload);
     alert("保存しました");
-    $("#dlgOp").close();
+    if($("#dlgOp")) $("#dlgOp").close();
     await refreshAll();
-  }catch(e){
-    alert("保存失敗: " + (e?.message||e));
-  }
-};
+  }catch(e){ alert("保存失敗: " + (e?.message||e)); }
+});
 
 /* ================== ADMIN: ADD MEMBER ================== */
-const openAddUser = ()=>{
-  $("#dlgAddUser").showModal();
-  $("#btnAddUserSave").onclick = async ()=>{
-    const username = $("#auUser").value.trim();
-    const password = $("#auPass").value.trim();
-    const role     = $("#auRole").value;
-    const department = $("#auDept").value.trim();
-    const full_name  = $("#auName").value.trim();
+function openAddUser(){
+  if($("#dlgAddUser")) $("#dlgAddUser").showModal();
+  setOnClick("#btnAddUserSave", async ()=>{
+    const username = $("#auUser")?.value.trim();
+    const password = $("#auPass")?.value.trim();
+    const role     = $("#auRole")?.value;
+    const department = $("#auDept")?.value.trim();
+    const full_name  = $("#auName")?.value.trim();
     if(!username || !password) return alert("Username dan Password wajib.");
     try{
       await jsonp("addMember", { data: JSON.stringify({ username, password, role, department, full_name }), user: JSON.stringify(CURRENT_USER||{}) });
       alert("Member berhasil ditambahkan");
-      $("#dlgAddUser").close();
-      $("#auUser").value = $("#auPass").value = $("#auDept").value = $("#auName").value = "";
-    }catch(e){
-      alert("Gagal menambahkan member: " + (e?.message||e));
-    }
-  };
-  $("#btnAddUserCancel").onclick = ()=> $("#dlgAddUser").close();
-};
-$("#btnAddMember")?.addEventListener("click", openAddUser);
+      if($("#dlgAddUser")) $("#dlgAddUser").close();
+      if($("#auUser")) $("#auUser").value = "";
+      if($("#auPass")) $("#auPass").value = "";
+      if($("#auDept")) $("#auDept").value = "";
+      if($("#auName")) $("#auName").value = "";
+    }catch(e){ alert("Gagal menambahkan member: " + (e?.message||e)); }
+  });
+  setOnClick("#btnAddUserCancel", ()=> $("#dlgAddUser") && $("#dlgAddUser").close());
+}
+setOnClick("#btnAddMember", openAddUser);
 
 /* ================== WEATHER (dummy) ================== */
 async function ensureWeather(){
-  try{
-    $("#wxTemp").textContent = "20℃";
-    $("#wxWind").textContent = "6 m/s";
-    $("#wxPlace").textContent = "GMT+9";
-  }catch{}
+  if($("#wxTemp"))  $("#wxTemp").textContent = "20℃";
+  if($("#wxWind"))  $("#wxWind").textContent = "6 m/s";
+  if($("#wxPlace")) $("#wxPlace").textContent = "GMT+9";
 }
 
 /* ================== FORM DIALOG (Generic) ================== */
 function openFormDialog(title, fields, onSave){
-  $("#dlgTitle").textContent = title;
-  const form = $("#formBody");
+  if($("#dlgTitle")) $("#dlgTitle").textContent = title;
+  const form = $("#formBody"); if(!form) return;
   form.innerHTML = fields.map(f=>`
     <div class="form-item">
       <label>${f.label}</label>
       <input id="f_${f.key}" value="${escapeHTML(f.value||'')}">
     </div>
   `).join("");
-  $("#btnDlgSave").onclick = async ()=>{
+  setOnClick("#btnDlgSave", async ()=>{
     const data = {};
-    fields.forEach(f=> data[f.key] = $("#f_"+f.key).value);
-    try{ await onSave(data); $("#dlgForm").close(); }catch(e){ alert(e?.message||e); }
-  };
-  $("#btnDlgCancel").onclick = ()=> $("#dlgForm").close();
-  $("#dlgForm").showModal();
+    fields.forEach(f=> data[f.key] = $("#f_"+f.key)?.value);
+    try{ await onSave(data); if($("#dlgForm")) $("#dlgForm").close(); }catch(e){ alert(e?.message||e); }
+  });
+  setOnClick("#btnDlgCancel", ()=> $("#dlgForm") && $("#dlgForm").close());
+  if($("#dlgForm")) $("#dlgForm").showModal();
 }
 
 /* ================== UTILS ================== */
 function debounce(fn, wait=250){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), wait); }; }
 function exportTableCSV(tbodySel, filename="export.csv"){
-  const tb = $(tbodySel);
-  if(!tb) return;
+  const tb = $(tbodySel); if(!tb) return;
   const rows = [];
   const table = tb.closest("table");
   const ths = $$("thead th", table).map(th => wrapCSV(th.textContent.trim()));
@@ -640,6 +633,6 @@ function escapeHTML(s){ return String(s??"").replace(/[&<>"']/g, m=>({ "&":"&amp
 
 /* ================== INIT ================== */
 document.addEventListener("DOMContentLoaded", ()=>{
-  setUser(null); // start in auth mode
-  $("#btnStationQR")?.addEventListener("click", openStationQrSheet);
+  setUser(null);
+  setOnClick("#btnStationQR", openStationQrSheet);
 });
