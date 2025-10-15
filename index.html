@@ -488,9 +488,8 @@
 <script defer src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
 
-<!-- App (gunakan app.js terbaru kamu; ID/handler tetap sama) -->
+<!-- Glue untuk theme + sidebar; app.js akan override handler data -->
 <script>
-/* ====== Minimal nav glue untuk sidebar + theme (tetap kompatibel app.js) ====== */
 const $=(q,el=document)=>el.querySelector(q);
 const $$=(q,el=document)=>[...el.querySelectorAll(q)];
 (function initTheme(){
@@ -498,45 +497,30 @@ const $$=(q,el=document)=>[...el.querySelectorAll(q)];
   const saved = localStorage.getItem("theme") || (sysDark ? "dark":"dark");
   document.documentElement.setAttribute("data-theme", saved);
   const btn=$("#btnTheme");
-  const sync=()=>{ btn.innerHTML = (document.documentElement.getAttribute("data-theme")==="dark" ? '<i class="fa-solid fa-sun"></i> Light' : '<i class="fa-solid fa-moon"></i> Dark'); };
+  const sync=()=>{ if(btn) btn.innerHTML=(document.documentElement.getAttribute("data-theme")==="dark" ? '<i class="fa-solid fa-sun"></i> Light':'<i class="fa-solid fa-moon"></i> Dark'); };
   if(btn) btn.onclick=()=>{ const t=document.documentElement.getAttribute("data-theme")==="dark"?"light":"dark"; document.documentElement.setAttribute("data-theme",t); localStorage.setItem("theme",t); sync(); };
   sync();
 })();
-
-/* Mark active item di sidebar */
-function markActive(btnId){
-  $$(".nav .item").forEach(x=>x.classList.remove("active"));
-  $("#"+btnId)?.classList.add("active");
-}
-
-/* Section show/hide (sinkron dengan app.js) */
-function show(id){
-  ["authView","pageDash","pageSales","pagePlan","pageShip","pageFinished","pageInv","pageInvoice","pageAnalytics"]
-    .forEach(p=> $("#"+p)?.classList.add("hidden"));
-  $("#"+id)?.classList.remove("hidden");
-}
-
-/* Hook tombol sidebar; app.js juga akan memasang handler—tidak konflik */
-$("#btnToDash")?.addEventListener("click", ()=>{ markActive("btnToDash"); show("pageDash"); window.refreshAll?.(); });
-$("#btnToSales")?.addEventListener("click", ()=>{ markActive("btnToSales"); show("pageSales"); window.loadSales?.(); });
-$("#btnToPlan")?.addEventListener("click", ()=>{ markActive("btnToPlan"); show("pagePlan"); window.loadPlans?.(); });
-$("#btnToShip")?.addEventListener("click", ()=>{ markActive("btnToShip"); show("pageShip"); window.loadShips?.(); });
-$("#btnToFinPage")?.addEventListener("click", ()=>{ markActive("btnToFinPage"); show("pageFinished"); window.loadFinished?.(); });
-$("#btnToInvPage")?.addEventListener("click", ()=>{ markActive("btnToInvPage"); show("pageInv"); window.loadInventory?.(); });
-$("#btnToInvoice")?.addEventListener("click", ()=>{ markActive("btnToInvoice"); show("pageInvoice"); window.initInvoicePage?.(); });
-$("#btnToAnalytics")?.addEventListener("click", ()=>{ markActive("btnToAnalytics"); show("pageAnalytics"); window.initCharts?.(); });
-
-/* Login minimal—kalau sudah ada di app.js, boleh diabaikan (tidak double) */
-$("#btnLogin")?.addEventListener("click", ()=> window.loginSubmit ? window.loginSubmit() : alert("Hubungkan app.js baru."));  
+function markActive(id){ $$(".nav .item").forEach(x=>x.classList.remove("active")); $("#"+id)?.classList.add("active"); }
+function show(id){ ["authView","pageDash","pageSales","pagePlan","pageShip","pageFinished","pageInv","pageInvoice","pageAnalytics"].forEach(p=>$("#"+p)?.classList.add("hidden")); $("#"+id)?.classList.remove("hidden"); }
+$("#btnToDash").addEventListener("click", ()=>{ markActive("btnToDash"); show("pageDash"); window.refreshAll?.(); });
+$("#btnToSales").addEventListener("click", ()=>{ markActive("btnToSales"); show("pageSales"); window.loadSales?.(); });
+$("#btnToPlan").addEventListener("click", ()=>{ markActive("btnToPlan"); show("pagePlan"); window.loadPlans?.(); });
+$("#btnToShip").addEventListener("click", ()=>{ markActive("btnToShip"); show("pageShip"); window.loadShips?.(); });
+$("#btnToFinPage").addEventListener("click", ()=>{ markActive("btnToFinPage"); show("pageFinished"); window.loadFinished?.(); });
+$("#btnToInvPage").addEventListener("click", ()=>{ markActive("btnToInvPage"); show("pageInv"); window.loadInventory?.(); });
+$("#btnToInvoice").addEventListener("click", ()=>{ markActive("btnToInvoice"); show("pageInvoice"); window.initInvoicePage?.(); });
+$("#btnToAnalytics").addEventListener("click", ()=>{ markActive("btnToAnalytics"); show("pageAnalytics"); window.initCharts?.(); });
+/* Login glue bila app.js belum terpasang */
+$("#btnLogin")?.addEventListener("click", ()=> window.loginSubmit ? window.loginSubmit() : alert("Hubungkan app.js baru."));
 $("#inUser")?.addEventListener("keydown", e=>{ if(e.key==='Enter') $("#btnLogin")?.click(); });
 $("#inPass")?.addEventListener("keydown", e=>{ if(e.key==='Enter') $("#btnLogin")?.click(); });
-
-/* Admin dialog (agar tetap bisa dipakai meski app.js belum di-load) */
+/* Admin dialog */
 $("#btnAddMember")?.addEventListener("click", ()=> $("#dlgAddMember").showModal());
 $("#btnAddMemberCancel")?.addEventListener("click", ()=> $("#dlgAddMember").close());
 </script>
 
-<!-- MUAT app.js versi perbaikan (yang kemarin) -->
+<!-- Muat app.js perbaikan milikmu -->
 <script defer src="app.js?v=left-sidebar-1"></script>
 </body>
 </html>
