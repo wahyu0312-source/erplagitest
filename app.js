@@ -22,7 +22,9 @@ const $$ = (q, el=document)=> [...el.querySelectorAll(q)];
 const qs = (o)=> Object.entries(o).map(([k,v])=>`${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join("&");
 const fmt= (d)=> d? new Date(d).toLocaleString("ja-JP"):"";
 const sleep = (ms)=> new Promise(r=>setTimeout(r,ms));
-window.requestIdleCallback ||= (cb)=> setTimeout(cb, 0);
+if (typeof window.requestIdleCallback !== 'function') {
+  window.requestIdleCallback = (cb)=> setTimeout(cb, 0);
+}
 
 /* ================== JSONP & CACHE ================== */
 function jsonp(action, params={}){
