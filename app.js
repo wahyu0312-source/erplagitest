@@ -1,7 +1,16 @@
-/* =================================================
-  TSH ERP Frontend — Optimized
-  Backend: Google Apps Script JSONP
-================================================= */
+/* ============================================================
+  TSH ERP Frontend — FULL
+  Backend: Google Apps Script JSONP (Code.gs yang sudah dikirim)
+  Fitur:
+   - Login/Logout + Role-based nav
+   - Dashboard (Orders) dengan chunked render & export CSV
+   - 受注 / 生産計画 / 出荷予定 / 完成品一覧 / 在庫 (list + search + export + print)
+   - 請求書 (list + draft sederhana + export PDF/Excel dummy front-end)
+   - 分析チャート (Chart.js)
+   - QR Scan (jsQR) + Save Operation
+   - Admin > Add Member Baru
+   - Weather badge (dummy)
+============================================================ */
 
 /* ================== CONFIG ================== */
 // Ganti ke URL Web App Apps Script Anda
@@ -43,7 +52,15 @@ async function cached(action, params={}, ttlMs=15000){
 /* ================== STATE ================== */
 let CURRENT_USER = null;
 let ORDERS = [];
+let SALES = [];
+let PLANS = [];
+let SHIPS = [];
+let FINISHED = [];
+let INVENTORY = [];
+let INVOICES = [];
 let MASTERS = { customers:[], drawings:[], item_names:[], part_nos:[], destinations:[], carriers:[], po_ids:[] };
+
+let CHARTS = {}; // simpan instance chart agar bisa destroy sebelum re-render
 
 const ROLE_MAP = {
   'admin': { pages:['pageDash','pageSales','pagePlan','pageShip','pageFinished','pageInv','pageInvoice','pageAnalytics'], nav:true },
@@ -59,6 +76,7 @@ function setUser(u){
   CURRENT_USER = u || null;
   document.body.classList.toggle("auth", !u);
   $("#userInfo").textContent = u ? `${u.role||''} / ${u.department||''}` : "";
+
   // Reset vis
   const buttons = ['btnToDash','btnToSales','btnToPlan','btnToShip','btnToFinPage','btnToInvPage','btnToInvoice','btnToAnalytics'];
   buttons.forEach(id=> $("#"+id)?.classList.add("hidden"));
@@ -86,7 +104,7 @@ function setUser(u){
   }
   requestIdleCallback(()=> { ensureWeather(); loadMasters().catch(()=>{}); });
 
-  // First paint: tampilkan Dash lalu load
+  // First paint: Dash → load
   show("pageDash");
   refreshAll().catch(()=>{});
 }
@@ -115,23 +133,21 @@ async function loginSubmit(){
   try{
     const me = await jsonp("login", { username:u, password:p });
     setUser(me);
-    // Bersihkan field login
     $("#inUser").value=""; $("#inPass").value="";
   }catch(e){
     alert("ログイン失敗: " + (e?.message || e));
   }
 }
-
 $("#btnLogout").onclick = async ()=>{
   try {
-    // Tutup dialog/stream kalau ada
     $("#dlgScan")?.open && $("#dlgScan").close();
     $("#dlgOp")?.open && $("#dlgOp").close();
     $("#dlgAddUser")?.open && $("#dlgAddUser").close();
   } finally {
     apiCache.clear();
-    ORDERS = [];
+    ORDERS = []; SALES=[]; PLANS=[]; SHIPS=[]; FINISHED=[]; INVENTORY=[]; INVOICES=[];
     MASTERS = {customers:[], drawings:[], item_names:[], part_nos:[], destinations:[], carriers:[], po_ids:[]};
+    Object.values(CHARTS).forEach(ch=> { try{ ch.destroy(); }catch{} }); CHARTS={};
     setUser(null);
   }
 };
@@ -152,7 +168,7 @@ function renderOrders(){
   const tb = $("#tbOrders");
   if(!tb) return;
   tb.innerHTML = "";
-  const chunk = 140; let i = 0;
+  const chunk = 120; let i = 0;
   (function paint(){
     const end = Math.min(i+chunk, rows.length);
     const frag = document.createDocumentFragment();
@@ -202,8 +218,8 @@ function renderOrders(){
   })();
 }
 $("#searchQ")?.addEventListener("input", debounce(renderOrders, 250));
-async function refreshAll(){ await loadOrders(); }
 $("#btnExportOrders")?.addEventListener('click', ()=> exportTableCSV("#tbOrders","orders.csv"));
+async function refreshAll(){ await loadOrders(); }
 
 /* ================== HELPERS BADGE/CHIP ================== */
 const normalizeProc = (s)=> String(s||"").trim()
@@ -229,12 +245,64 @@ const statusToBadge = (s)=>{
   return `<span class="chip"><i class="fa-regular fa-clock"></i>${s||"—"}</span>`;
 };
 
-/* ================== SHIP MINI ================== */
+/* ================== SALES ================== */
+async function loadSales(){
+  // Menggunakan orders sebagai “受注” view (umum di file asli)
+  // Jika ada sheet khusus sales, ganti ke cached("listSales")
+  const rows = ORDERS.length ? ORDERS : await cached("listOrders",{},15000);
+  SALES = rows;
+  renderGenericTable("#thSales", "#tbSales", rows, [
+    "po_id","得意先","品名","品番","図番","status","current_process","ok_count","ng_count","updated_at","updated_by"
+  ]);
+  attachSearch("#salesSearch","#tbSales");
+  $("#btnSalesExport")?.addEventListener("click", ()=> exportTableCSV("#tbSales","sales.csv"));
+  $("#btnSalesPrint")?.addEventListener("click", ()=> window.print());
+  $("#btnSalesCreate")?.onclick = ()=> openFormDialog("受注 作成", [
+    {key:"po_id", label:"注番"},
+    {key:"得意先", label:"得意先"},
+    {key:"品名", label:"品名"},
+    {key:"品番", label:"品番"},
+    {key:"図番", label:"図番"},
+  ], async (data)=>{ alert("デモ: 作成ハンドラはバックエンド未実装"); });
+}
+
+/* ================== PLANS ================== */
+async function loadPlans(){
+  try{ PLANS = await cached("listPlans",{},30000); }catch{ PLANS=[]; }
+  renderGenericTable("#thPlan", "#tbPlan", PLANS, ["po_id","工程","開始予定","終了予定","担当","メモ","状態"]);
+  attachSearch("#planSearch","#tbPlan");
+  $("#btnPlanExport")?.addEventListener("click", ()=> exportTableCSV("#tbPlan","plans.csv"));
+  $("#btnPlanPrint")?.addEventListener("click", ()=> window.print());
+  $("#btnPlanCreate")?.onclick = ()=> openFormDialog("生産計画 作成", [
+    {key:"po_id",label:"注番"},
+    {key:"工程",label:"工程"},
+    {key:"開始予定",label:"開始予定"},
+    {key:"終了予定",label:"終了予定"},
+    {key:"担当",label:"担当"},
+    {key:"メモ",label:"メモ"}
+  ], async (data)=>{ alert("デモ: 作成ハンドラはバックエンド未実装"); });
+}
+
+/* ================== SHIPS ================== */
+async function loadShips(){
+  try{ SHIPS = await cached("listShip",{},30000); }catch{ SHIPS=[]; }
+  renderGenericTable("#thShip", "#tbShip", SHIPS, ["po_id","得意先","品名","品番","数量","送付先","出荷日","納入日","運送会社","備考","状態"]);
+  attachSearch("#shipSearch","#tbShip");
+  $("#btnShipExport")?.addEventListener("click", ()=> exportTableCSV("#tbShip","shipments.csv"));
+  $("#btnShipPrint")?.addEventListener("click", ()=> window.print());
+  $("#btnShipCreate")?.onclick = ()=> openFormDialog("出荷予定 作成", [
+    {key:"po_id",label:"注番"},
+    {key:"得意先",label:"得意先"},
+    {key:"数量",label:"数量"},
+    {key:"出荷日",label:"出荷日"},
+    {key:"納入先",label:"納入先"}
+  ], async (data)=>{ alert("デモ: 作成ハンドラはバックエンド未実装"); });
+}
 async function loadShipsMini(){
   try{
-    const ship = await cached("listShip",{},30000);
+    const ship = SHIPS.length ? SHIPS : await cached("listShip",{},30000);
     const today = new Date().toISOString().slice(0,10);
-    const todayRows = ship.filter(r => String(r['出荷予定日']||'').startsWith(today));
+    const todayRows = ship.filter(r => String(r['出荷予定日']||r['出荷日']||'').startsWith(today));
     $("#shipToday").textContent = todayRows.length? `${todayRows.length} 件`: "—";
     $("#shipPlan").textContent  = ship.length? `${ship.length} 件`: "—";
   }catch(e){
@@ -243,39 +311,239 @@ async function loadShipsMini(){
   }
 }
 
-/* ================== SALES / PLAN / SHIP / FIN / INV (placeholder minimal agar lengkap) ================== */
-async function loadSales(){ /* gunakan data sheet jika diperlukan */ }
-async function loadPlans(){ /* ... */ }
-async function loadShips(){ /* ... (tabel penuh) */ }
-async function loadFinished(){ /* ... */ }
-async function loadInventory(){ /* ... */ }
+/* ================== FINISHED ================== */
+async function loadFinished(){
+  try{ FINISHED = await cached("listFinished",{},30000); }catch{ FINISHED=[]; }
+  renderGenericTable("#thFin","#tbFin",FINISHED,["po_id","得意先","品名","品番","数量","完成日","検査","備考"]);
+  attachSearch("#finSearch","#tbFin");
+  $("#btnFinExport")?.addEventListener("click", ()=> exportTableCSV("#tbFin","finished.csv"));
+  $("#btnFinPrint")?.addEventListener("click", ()=> window.print());
+}
 
-/* ================== INVOICE (minimal) ================== */
-function initInvoicePage(){
-  // contoh minimal: muat masters customer -> <select>
+/* ================== INVENTORY ================== */
+async function loadInventory(){
+  try{ INVENTORY = await cached("listInventory",{},30000); }catch{ INVENTORY=[]; }
+  renderGenericTable("#thInv","#tbInv",INVENTORY,["品番","ロット","在庫数","場所","更新日"]);
+  attachSearch("#invSearch","#tbInv");
+  $("#btnInvExport")?.addEventListener("click", ()=> exportTableCSV("#tbInv","inventory.csv"));
+  $("#btnInvPrint")?.addEventListener("click", ()=> window.print());
+}
+
+/* ================== GENERIC TABLE RENDERER ================== */
+function renderGenericTable(thSel, tbSel, rows, cols){
+  const th = $(thSel), tb = $(tbSel);
+  if(!th || !tb) return;
+  th.innerHTML = "<tr>" + cols.map(c=>`<th>${c}</th>`).join("") + "</tr>";
+  tb.innerHTML = "";
+  const chunk = 200; let i = 0;
+  (function paint(){
+    const end = Math.min(i+chunk, rows.length);
+    const frag = document.createDocumentFragment();
+    for(; i<end; i++){
+      const r = rows[i];
+      const tr = document.createElement("tr");
+      tr.innerHTML = cols.map(c=>`<td>${escapeHTML(r[c])}</td>`).join("");
+      frag.appendChild(tr);
+    }
+    tb.appendChild(frag);
+    if(i < rows.length) requestIdleCallback(paint);
+  })();
+}
+function attachSearch(inputSel, tbSel){
+  const input = $(inputSel), tb = $(tbSel);
+  if(!input || !tb) return;
+  const table = tb.closest("table");
+  const dataRows = [...$$("tr", tb)];
+  input.oninput = debounce(()=>{
+    const q = (input.value||"").toLowerCase().trim();
+    $$("tr", tb).forEach(tr=>{
+      const t = tr.textContent.toLowerCase();
+      tr.style.display = (!q || t.includes(q)) ? "" : "none";
+    });
+  }, 200);
+}
+
+/* ================== INVOICE ================== */
+async function initInvoicePage(){
+  // masters untuk dropdown customer
+  if(!MASTERS.customers?.length){ try{ await loadMasters(); }catch{} }
   const sel = $("#invoiceCustomer");
   sel.innerHTML = `<option value="">(得意先を選択)</option>` + (MASTERS.customers||[]).map(c=>`<option>${c}</option>`).join("");
+
+  // list invoices
+  try{ INVOICES = await cached("listInvoices",{},15000); }catch{ INVOICES=[]; }
+  renderInvoicesList();
+  $("#btnInvoiceReload").onclick = buildInvoiceCandidates;
+  $("#btnInvoiceSave").onclick = saveInvoice;
+  $("#btnInvoicePdf").onclick  = ()=> alert("PDF出力は端末の印刷機能をご利用ください（またはバックエンド実装が必要）");
+  $("#btnInvoiceXlsx").onclick = ()=> exportTableCSV("#tbInvoiceCandidates","invoice_candidates.csv");
+}
+function renderInvoicesList(){
+  const tb = $("#tbInvoiceList");
+  tb.innerHTML = "";
+  INVOICES.forEach(r=>{
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${r.invoice_no||''}</td><td>${r['得意先']||''}</td><td>${r['発行日']||''}</td><td>${r['合計']||0}</td><td>${r['ファイル名']||''}</td><td>${r['作成者']||''}</td>`;
+    tb.appendChild(tr);
+  });
+}
+async function buildInvoiceCandidates(){
+  const cust = $("#invoiceCustomer").value;
+  const date = $("#invoiceDate").value;
+  const tbCand = $("#tbInvoiceCandidates");
+  const tbStat = $("#tbInvoiceStatus");
+  tbCand.innerHTML = ""; tbStat.innerHTML = "";
+  // Ambil dari shipments (yang sudah/akan dikirim) sebagai kandidat
+  if(!SHIPS.length){ try{ SHIPS = await cached("listShip",{},30000); }catch{ SHIPS=[]; } }
+
+  const rows = SHIPS.filter(r=>{
+    const matchCust = !cust || String(r["得意先"]||r["納入先"]||"") === cust;
+    const matchDate = !date || String(r["出荷日"]||r["出荷予定日"]||"").startsWith(date);
+    return matchCust && matchDate;
+  });
+  // Kandidat
+  rows.forEach(r=>{
+    const tr = document.createElement("tr");
+    const qty = Number(r["数量"]||0), price = Number(r["単価"]||0), total = (qty*price)||0;
+    tr.innerHTML = `
+      <td><input type="checkbox" class="cand-chk" data-po="${escapeHTML(r["po_id"]||'')}" data-name="${escapeHTML(r["品名"]||'')}" data-part="${escapeHTML(r["品番"]||'')}" data-qty="${qty}" data-price="${price}" data-date="${escapeHTML(r["出荷日"]||r["出荷予定日"]||'')}"></td>
+      <td>${r["po_id"]||''}</td>
+      <td>${r["品名"]||''}</td>
+      <td>${r["品番"]||''}</td>
+      <td>${qty}</td>
+      <td>${price}</td>
+      <td>${total}</td>
+      <td>${r["出荷日"]||r["出荷予定日"]||''}</td>`;
+    tbCand.appendChild(tr);
+  });
+  // Status (semua milik customer tsb)
+  const allRows = SHIPS.filter(r=> !cust || (String(r["得意先"]||r["納入先"]||"") === cust));
+  allRows.forEach(r=>{
+    const tr = document.createElement("tr");
+    const qty = Number(r["数量"]||0), price = Number(r["単価"]||0), total = (qty*price)||0;
+    tr.innerHTML = `
+      <td>${r["po_id"]||''}</td>
+      <td>${r["品名"]||''}</td>
+      <td>${r["品番"]||''}</td>
+      <td>${qty}</td>
+      <td>${price}</td>
+      <td>${total}</td>
+      <td>${r["出荷日"]||r["出荷予定日"]||''}</td>
+      <td>${r["状態"]||''}</td>`;
+    tbStat.appendChild(tr);
+  });
+}
+async function saveInvoice(){
+  const cust = $("#invoiceCustomer").value;
+  const date = $("#invoiceDate").value || new Date().toISOString().slice(0,10);
+  const chks = $$(".cand-chk:checked");
+  if(!cust){ alert("得意先を選択してください"); return; }
+  if(!chks.length){ alert("候補を選択してください"); return; }
+  const items = [...chks].map(c=>({
+    po_id: c.dataset.po, 商品名: c.dataset.name, 品番: c.dataset.part,
+    数量: Number(c.dataset.qty||0), 単価:Number(c.dataset.price||0),
+    金額: Number(c.dataset.qty||0) * Number(c.dataset.price||0),
+    出荷日: c.dataset.date || ""
+  }));
+  const total = items.reduce((s,it)=> s + Number(it.金額||0), 0);
+  try{
+    const res = await jsonp("saveInvoice", {
+      customer: cust, date, total, filename: `INV_${cust}_${date}.pdf`,
+      user: JSON.stringify(CURRENT_USER||{}), items: JSON.stringify(items)
+    });
+    alert(`請求書を保存しました: ${res.invoice_no}`);
+    INVOICES = await cached("listInvoices",{},0); // refresh
+    renderInvoicesList();
+  }catch(e){
+    alert("請求書保存に失敗: " + (e?.message||e));
+  }
 }
 
-/* ================== WEATHER (dummy local) ================== */
-async function ensureWeather(){
-  try{
-    $("#wxTemp").textContent = "20℃";
-    $("#wxWind").textContent = "6 m/s";
-    $("#wxPlace").textContent = "GMT+9";
-  }catch{}
+/* ================== ANALYTICS (Chart.js) ================== */
+function destroyChart(id){ if(CHARTS[id]){ try{ CHARTS[id].destroy(); }catch{}; delete CHARTS[id]; } }
+async function initCharts(){
+  // Contoh: OK vs NG kumulatif by month from ORDERS
+  if(!ORDERS.length){ await loadOrders(); }
+  const byMonth = {};
+  ORDERS.forEach(r=>{
+    const d = (r.updated_at||"").slice(0,7) || "—";
+    byMonth[d] ||= { ok:0, ng:0 };
+    byMonth[d].ok += Number(r.ok_count||0);
+    byMonth[d].ng += Number(r.ng_count||0);
+  });
+  const labels = Object.keys(byMonth).sort();
+  const ok = labels.map(m=> byMonth[m].ok);
+  const ng = labels.map(m=> byMonth[m].ng);
+
+  let canvas = $("#analyticsChart");
+  if(!canvas){
+    // buat kanvas kalau belum ada
+    const sec = document.createElement("section");
+    sec.innerHTML = `<div class="card"><h3 style="margin:0 0 10px">OK / NG 推移</h3><canvas id="analyticsChart" height="120"></canvas></div>`;
+    $("#pageAnalytics").appendChild(sec);
+    canvas = $("#analyticsChart");
+  }
+
+  destroyChart("main");
+  CHARTS.main = new Chart(canvas.getContext("2d"), {
+    type: "line",
+    data: { labels, datasets:[
+      { label:"OK", data: ok, tension:.3 },
+      { label:"NG", data: ng, tension:.3 }
+    ]},
+    options:{
+      responsive:true,
+      plugins:{ legend:{ position:"bottom" } },
+      interaction:{ mode:"index", intersect:false },
+      scales:{ x:{ title:{display:true, text:"月"} }, y:{ beginAtZero:true } }
+    }
+  });
 }
+
+/* ================== MASTERS ================== */
+async function loadMasters(){ try{ MASTERS = await cached("listMasters", {}, 60000); }catch{} }
 
 /* ================== QR / OP DIALOGS ================== */
 function openStationQrSheet(){
   alert("工程QR シートを開きます（実環境のスプレッドシートURLにリンクしてください）");
 }
+let scanStream=null, scanRAF=null;
 function openScanDialog(po){
   $("#scanResult").textContent = po ? `注番: ${po}` : "—";
   $("#dlgScan").showModal();
 }
-$("#btnScanClose").onclick = ()=> $("#dlgScan").close();
-$("#btnScanStart").onclick = ()=> alert("カメラ起動は端末権限が必要です（jsQR使用）。");
+$("#btnScanClose").onclick = ()=> { stopScan(); $("#dlgScan").close(); };
+$("#btnScanStart").onclick = async ()=>{
+  try{
+    stopScan();
+    const video = $("#scanVideo"), canvas=$("#scanCanvas"), ctx=canvas.getContext("2d");
+    scanStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"}});
+    video.srcObject = scanStream; await video.play();
+    const loop = ()=>{
+      if(!scanStream) return;
+      const w = video.videoWidth, h = video.videoHeight;
+      if(w && h){
+        canvas.width = w; canvas.height = h;
+        ctx.drawImage(video, 0, 0, w, h);
+        const imgData = ctx.getImageData(0,0,w,h);
+        const code = jsQR(imgData.data, w, h);
+        if(code && code.data){
+          $("#scanResult").textContent = "QR: " + code.data;
+        }
+      }
+      scanRAF = requestAnimationFrame(loop);
+    };
+    loop();
+  }catch(e){
+    alert("カメラ起動に失敗: " + (e?.message||e));
+  }
+};
+function stopScan(){
+  try{ if(scanRAF) cancelAnimationFrame(scanRAF); }catch{}
+  scanRAF=null;
+  try{ scanStream?.getTracks()?.forEach(t=> t.stop()); }catch{}
+  scanStream=null;
+}
 
 function openOpDialog(po){
   $("#opPO").textContent = po || "—";
@@ -327,6 +595,34 @@ const openAddUser = ()=>{
 };
 $("#btnAddMember")?.addEventListener("click", openAddUser);
 
+/* ================== WEATHER (dummy) ================== */
+async function ensureWeather(){
+  try{
+    $("#wxTemp").textContent = "20℃";
+    $("#wxWind").textContent = "6 m/s";
+    $("#wxPlace").textContent = "GMT+9";
+  }catch{}
+}
+
+/* ================== FORM DIALOG (Generic) ================== */
+function openFormDialog(title, fields, onSave){
+  $("#dlgTitle").textContent = title;
+  const form = $("#formBody");
+  form.innerHTML = fields.map(f=>`
+    <div class="form-item">
+      <label>${f.label}</label>
+      <input id="f_${f.key}" value="${escapeHTML(f.value||'')}">
+    </div>
+  `).join("");
+  $("#btnDlgSave").onclick = async ()=>{
+    const data = {};
+    fields.forEach(f=> data[f.key] = $("#f_"+f.key).value);
+    try{ await onSave(data); $("#dlgForm").close(); }catch(e){ alert(e?.message||e); }
+  };
+  $("#btnDlgCancel").onclick = ()=> $("#dlgForm").close();
+  $("#dlgForm").showModal();
+}
+
 /* ================== UTILS ================== */
 function debounce(fn, wait=250){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), wait); }; }
 function exportTableCSV(tbodySel, filename="export.csv"){
@@ -334,10 +630,10 @@ function exportTableCSV(tbodySel, filename="export.csv"){
   if(!tb) return;
   const rows = [];
   const table = tb.closest("table");
-  const ths = $$("thead th", table).map(th => th.textContent.trim());
+  const ths = $$("thead th", table).map(th => wrapCSV(th.textContent.trim()));
   rows.push(ths.join(","));
   $$("tr", tb).forEach(tr=>{
-    const cols = $$("td,th", tr).map(td => `"${(td.textContent||'').replace(/"/g,'""')}"`);
+    const cols = $$("td,th", tr).map(td => wrapCSV((td.textContent||'')));
     rows.push(cols.join(","));
   });
   const blob = new Blob([rows.join("\n")], {type:"text/csv;charset=utf-8;"});
@@ -347,12 +643,11 @@ function exportTableCSV(tbodySel, filename="export.csv"){
   a.click();
   URL.revokeObjectURL(a.href);
 }
+function wrapCSV(s){ s = (s||"").replace(/\r?\n/g," ").replace(/"/g,'""'); return `"${s}"`; }
+function escapeHTML(s){ return String(s??"").replace(/[&<>"']/g, m=>({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[m])); }
 
 /* ================== INIT ================== */
 document.addEventListener("DOMContentLoaded", ()=>{
-  // Mulai dari mode auth (login only)
-  setUser(null);
-
-  // Sistem dropdown: 工程QR
+  setUser(null); // start in auth mode
   $("#btnStationQR")?.addEventListener("click", openStationQrSheet);
 });
