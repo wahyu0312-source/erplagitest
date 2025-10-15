@@ -1,0 +1,141 @@
+:root{
+--bg:#f6f8fb; --card:#ffffff; --text:#0f172a; --muted:#64748b;
+--brand:#0ea5a4; --brand-600:#0d9488; --border:#e2e8f0;
+--ring:rgba(14,165,164,.25); --shadow:0 8px 28px rgba(2,6,23,.08);
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;font:14px/1.4 system-ui,Segoe UI,Roboto,Helvetica,Arial,'Hiragino Kaku Gothic ProN','Meiryo',sans-serif;background:var(--bg);color:var(--text)}
+.nav{position:sticky;top:0;z-index:30;background:linear-gradient(180deg,#0ea5a4,#0b8b86);color:#fff;padding:.75rem 1rem;display:flex;align-items:center;gap:1rem;box-shadow:0 6px 14px rgba(13,148,136,.25)}
+.nav .brand{font-weight:800}
+.nav .logo{width:28px;height:28px;border-radius:6px;filter:drop-shadow(0 1px 2px rgba(0,0,0,.2))}
+.nav .nav-left{display:flex;align-items:center;gap:.5rem}
+.nav .nav-right{margin-left:auto;display:flex;align-items:center;gap:.6rem;flex-wrap:wrap}
+
+.container{max-width:min(95vw,1600px);margin:1.1rem auto;padding:0 1rem}
+.card{background:var(--card);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow);padding:1rem}
+.card.sub{padding:.8rem}
+.card-tight{max-width:520px;margin:4rem auto}
+.row-between{display:flex;justify-content:space-between;align-items:center;gap:.75rem;flex-wrap:wrap}
+.row{display:flex;align-items:center;gap:.5rem}
+.row-end{display:flex;justify-content:flex-end;gap:.5rem}
+.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:.6rem}
+.grid-form{grid-template-columns:repeat(2,minmax(0,1fr))}
+.grid-auth{grid-template-columns:1fr}
+@media (max-width:960px){ .grid-form{grid-template-columns:1fr} }
+.input, input, select, textarea{width:100%;padding:.55rem .65rem;border-radius:10px;border:1px solid var(--border);background:#fff;color:#0f172a;outline:0;transition:border .15s, box-shadow .15s}
+.input:focus, input:focus, select:focus, textarea:focus{border-color:var(--brand);box-shadow:0 0 0 .18rem var(--ring)}
+.input-lg{font-size:1.05rem;padding:.75rem .85rem}
+
+.btn{display:inline-flex;align-items:center;gap:.45rem;padding:.5rem .8rem;border-radius:999px;border:1px solid var(--brand);background:var(--brand);color:#fff;cursor:pointer}
+.btn:hover{background:var(--brand-600);border-color:var(--brand-600)}
+.btn.ghost{background:#fff;color:#0f172a;border-color:var(--border)}
+.btn.ghost:hover{background:#f1f5f9}
+.btn.primary{background:var(--brand);border-color:var(--brand);color:#fff}
+
+.full{width:100%}.grow{flex:1}.hidden{display:none!important}.muted{color:var(--muted)}.s{font-size:.9rem}
+/* Required indicator */
+.req{ color:#dc2626; font-weight:700; margin-left:.25rem }
+.form-item label{ display:flex; align-items:center; gap:.25rem; font-size:.9rem; color:var(--muted) }
+input:required:invalid, select:required:invalid{
+border-color:#fecaca;
+box-shadow:0 0 0 .18rem rgba(239,68,68,.15);
+}
+
+.table-wrap{overflow:auto;border:1px solid var(--border);border-radius:12px}
+table.table{width:100%;border-collapse:separate;border-spacing:0}
+.table th,.table td{padding:.6rem .7rem;border-bottom:1px solid var(--border);text-align:left;vertical-align:middle;white-space:nowrap}
+.table thead th{position:sticky;top:0;background:#f8fafc;z-index:1;font-weight:700}
+.table tbody tr:hover{background:#f9fafb}
+.badge{display:inline-flex;align-items:center;gap:.35rem;padding:.25rem .55rem;border-radius:999px;font-weight:700;font-size:.82rem;border:1px solid}
+.st-inspected{color:#3730a3;background:#eef2ff;border-color:#c7d2fe}
+.st-ready{color:#7c2d12;background:#fffbeb;border-color:#fde68a}
+.st-shipped{color:#334155;background:#f1f5f9;border-color:#cbd5e1}
+.chip{display:inline-flex;align-items:center;gap:.35rem;padding:.25rem .55rem;border-radius:999px;font-weight:700;font-size:.82rem;border:1px solid}
+.p-laser{color:#0f766e;background:#ecfeff;border-color:#99f6e4}
+.p-bend{color:#6b21a8;background:#faf5ff;border-color:#e9d5ff}
+.p-press{color:#9a3412;background:#fff7ed;border-color:#fed7aa}
+.p-assembly{color:#1e3a8a;background:#eff6ff;border-color:#bfdbfe}
+.p-inspection{color:#7c3aed;background:#f5f3ff;border-color:#ddd6fe}
+
+.ship-list{max-height:28vh;overflow:auto}
+.ship-item{padding:.4rem .5rem;border:1px solid var(--border);border-radius:10px;margin-bottom:.5rem;background:#fff}
+.grid-ship-panels{grid-template-columns:repeat(2,minmax(0,1fr));gap:.8rem}
+
+dialog.paper{border:none;border-radius:16px;box-shadow:var(--shadow);padding:0;max-width:820px}
+dialog.paper::backdrop{background:rgba(15,23,42,.45)}
+dialog .body{padding:1rem 1rem 0} dialog footer{padding:0 1rem 1rem}
+
+.center{text-align:center}
+
+/* Print A4 */
+@media print {
+@page{size:A4 portrait;margin:12mm}
+.nav,.btn,.dropdown-inline,input[type="file"]{display:none!important}
+.container{max-width:100%;padding:0}
+.card{box-shadow:none;border:1px solid #ddd;padding:.6rem}
+table.table{font-size:12px}
+.table th,.table td{padding:.35rem .4rem;white-space:normal}
+}
+/* Weather pill */
+#weatherWrap{
+padding:.25rem .6rem;
+border-radius:999px;
+background:rgba(255,255,255,.18);
+color:#fff;
+backdrop-filter: saturate(120%) blur(2px);
+}
+#weatherWrap i{ opacity:.95 }
+#weatherWrap span{ color:#fff }
+.table .row .btn { padding:.35rem .6rem; font-size:.85rem }
+.table tbody tr:hover .btn { filter:brightness(0.98) }
+/* ===== Dashboard table polish ===== */
+.table-wrap table { table-layout: fixed; }
+#tbOrders td { vertical-align: middle; }
+
+/* Stack untuk Status / 工程 */
+.cell-stack {
+display: flex; flex-direction: column; align-items: center;
+gap: 6px; line-height: 1.15;
+}
+
+/* Badge status: sedikit lebih padat */
+.badge { display:inline-flex; align-items:center; gap:6px;
+padding:6px 10px; border-radius:999px; font-weight:600; font-size:13px; }
+
+/* Chip proses: padat */
+.chip { display:inline-flex; align-items:center; gap:6px;
+padding:6px 10px; border-radius:999px; font-weight:600; font-size:13px; }
+
+/* OK/NG kecil & kompak */
+.counts { display:flex; gap:8px; flex-wrap:wrap; justify-content:center; }
+.count {
+display:inline-flex; align-items:center; border:1px solid #e5e7eb;
+border-radius:999px; padding:2px 8px; font-size:12px; font-weight:700;
+}
+.count.ok { background:#f6fffb; border-color:#b7f0d3; }
+.count.ng { background:#fff7f7; border-color:#f3c1c1; }
+
+/* Kolom 操作: ikon-ghost kecil, rapi, bisa wrap */
+.actions { display:flex; gap:8px; flex-wrap:wrap; justify-content:center; }
+.btn.icon {
+display:inline-flex; align-items:center; gap:6px;
+padding:6px 10px; border-radius:999px; border:1px solid #e5e7eb;
+background:#fff; cursor:pointer;
+}
+.btn.icon.ghost:hover { background:#f8fafc; }
+.btn.icon i { font-size:14px; }
+
+/* Responsif: kecilkan label tombol di layar sempit */
+@media (max-width: 980px){
+.btn.icon span{ display:none; } /* ikon-only */
+}
+/* ... semua style lama tetap ... */
+
+/* Pill status untuk 請求書 */
+.pill{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font-weight:700;font-size:12px;border:1px solid}
+.pill-green{color:#166534;background:#ecfdf5;border-color:#a7f3d0}
+.pill-red{color:#991b1b;background:#fef2f2;border-color:#fecaca}
+
+/* Right align helper */
+.right{text-align:right}
