@@ -1,662 +1,913 @@
-/* ============================================================
-  TSH ERP Frontend — FULL MERGE (stable)
-  - Tidak pakai optional chaining pada assignment/event
-  - Tanpa ||= (polyfill manual)
-  - Perintah & sub-menu: Login/Logout, Dashboard, 受注, 生産計画, 出荷予定,
-    完成品一覧, 在庫, 請求書, 分析, 工程QR, QR Scan, Admin Add Member
-============================================================ */
+/* =========================================================
+ * app.js — Tokyo Seimitsu ERP (Frontend) — MAX Edition
+ * ========================================================= */
 
-/* ================== CONFIG ================== */
-const API_BASE = "https://script.google.com/macros/s/AKfycbyFPilRpjXxKVlM2Av2LunQJAIJszz9wNX0j1Ab1pbWkZeecIx_QNZwoKQR6XCNGYSLGA/exec";
+/* ===== Config ===== */
+const API_BASE = "https://script.google.com/macros/s/AKfycbxhRDN1AckQ9B9FvE8DnA46ueOF0tXjKvpK5PlI6uQIEk0PgpL9VOLMDHO7XpIDArEFYw/exec"; // WAJIB: URL doGet/doPost Apps Script
+const API_KEY = ""; // optional
 
-/* ================== DOM HELPERS ================== */
-const $  = (q, el=document)=> el.querySelector(q);
-const $$ = (q, el=document)=> [].slice.call(el.querySelectorAll(q));
-const qs = (o)=> Object.entries(o).map(([k,v])=>`${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join("&");
-const fmt= (d)=> d? new Date(d).toLocaleString("ja-JP"):"";
+const PROCESSES = [
+  'レーザ加工','曲げ加工','外枠組立','シャッター組立','シャッター溶接','コーキング',
+  '外枠塗装','組立（組立中）','組立（組立済）','外注','検査工程'
+];
 
-/* requestIdleCallback polyfill (tanpa ||=) */
-if (typeof window.requestIdleCallback !== "function") {
-  window.requestIdleCallback = (cb)=> setTimeout(cb, 0);
-}
-
-/* Helper aman untuk event (tanpa ?. pada assignment) */
-function setOnClick(sel, fn){ const el=$(sel); if(el) el.onclick = fn; }
-function addEvt(sel, ev, fn){ const el=$(sel); if(el) el.addEventListener(ev, fn); }
-
-/* ================== JSONP & CACHE ================== */
-function jsonp(action, params={}){
-  return new Promise((resolve,reject)=>{
-    const cb = "cb_"+Math.random().toString(36).slice(2);
-    params = { ...params, action, callback: cb };
-    const s = document.createElement("script");
-    s.src = `${API_BASE}?${qs(params)}`;
-    const timeout = setTimeout(()=>{ cleanup(); reject(new Error("API timeout")); }, 8000);
-    function cleanup(){ try{ delete window[cb]; s.remove(); }catch{} clearTimeout(timeout); }
-    window[cb] = (resp)=>{ cleanup(); if(resp && resp.ok) resolve(resp.data); else reject(new Error((resp && resp.error)||"API error")); };
-    s.onerror = ()=>{ cleanup(); reject(new Error("JSONP load error")); };
-    document.body.appendChild(s);
-  });
-}
-const apiCache = new Map();
-async function cached(action, params={}, ttlMs=15000){
-  const key = action+":"+JSON.stringify(params||{});
-  const hit = apiCache.get(key);
-  const now = Date.now();
-  if(hit && now-hit.t < ttlMs) return hit.v;
-  const v = await jsonp(action, params);
-  apiCache.set(key, {v, t: now});
-  return v;
-}
-
-/* ================== STATE ================== */
-let CURRENT_USER = null;
-let ORDERS=[], SALES=[], PLANS=[], SHIPS=[], FINISHED=[], INVENTORY=[], INVOICES=[];
-let MASTERS = { customers:[], drawings:[], item_names:[], part_nos:[], destinations:[], carriers:[], po_ids:[] };
-let CHARTS = {};
-
-const ROLE_MAP = {
-  'admin': { pages:['pageDash','pageSales','pagePlan','pageShip','pageFinished','pageInv','pageInvoice','pageAnalytics'], nav:true },
-  '営業': { pages:['pageSales','pageDash','pageFinished','pageInv','pageInvoice','pageAnalytics'], nav:true },
-  '生産管理': { pages:['pagePlan','pageShip','pageDash','pageFinished','pageInv','pageInvoice','pageAnalytics'], nav:true },
-  '生産管理部': { pages:['pagePlan','pageShip','pageDash','pageFinished','pageInv','pageInvoice','pageAnalytics'], nav:true },
-  '製造': { pages:['pageDash','pageFinished','pageInv','pageAnalytics'], nav:true },
-  '検査': { pages:['pageDash','pageFinished','pageInv','pageAnalytics'], nav:true }
+/* ===== Station toggle rules ===== */
+const STATION_RULES = {
+  'レーザ加工': (o)=> ({ current_process:'レーザ加工' }),
+  '曲げ工程': (o)=> ({ current_process:'曲げ加工' }), // alias
+  '曲げ加工': (o)=> ({ current_process:'曲げ加工' }),
+  '外枠組立': (o)=> ({ current_process:'外枠組立' }),
+  'シャッター組立': (o)=> ({ current_process:'シャッター組立' }),
+  'シャッター溶接': (o)=> ({ current_process:'シャッター溶接' }),
+  'コーキング': (o)=> ({ current_process:'コーキング' }),
+  '外枠塗装': (o)=> ({ current_process:'外枠塗装' }),
+  '組立工程': (o)=> (o.current_process==='組立（組立中）' ? { current_process:'組立（組立済）' } : { current_process:'組立（組立中）' }),
+  '検査工程': (o)=> (o.current_process==='検査工程' && !['検査保留','不良品（要リペア）','検査済'].includes(o.status) ? { current_process:'検査工程', status:'検査済' } : { current_process:'検査工程' }),
+  '出荷工程': (o)=> (o.status==='出荷準備' ? { current_process:o.current_process||'検査工程', status:'出荷済' } : { current_process:'検査工程', status:'出荷準備' })
 };
 
-/* ================== BADGE/CHIP ================== */
-const normalizeProc = (s)=> String(s||"").trim()
-  .replace("レーサ加工","レザー加工")
-  .replace("外作加工","外注加工/組立") || "未設定";
-function procToChip(p){
-  p = normalizeProc(p);
-  if(/レザー加工|レーザー/.test(p)) return `<span class="chip" style="background:#fef3c7"><i class="fa-solid fa-bolt"></i>${p}</span>`;
-  if(/曲げ/.test(p))              return `<span class="chip" style="background:#e0f2fe"><i class="fa-solid fa-wave-square"></i>${p}</span>`;
-  if(/外注加工|加工/.test(p))     return `<span class="chip" style="background:#e2e8f0"><i class="fa-solid fa-compass-drafting"></i>${p}</span>`;
-  if(/組立/.test(p))              return `<span class="chip" style="background:#e9d5ff"><i class="fa-solid fa-screwdriver-wrench"></i>${p}</span>`;
-  if(/検査/.test(p))              return `<span class="chip" style="background:#dcfce7"><i class="fa-regular fa-square-check"></i>${p}</span>`;
-  return `<span class="chip"><i class="fa-regular fa-square"></i>${p||'—'}</span>`;
-}
-function statusToBadge(s){
-  s = String(s||"");
-  if(/組立中/.test(s))  return `<span class="chip"><i class="fa-solid fa-screwdriver-wrench"></i>${s}</span>`;
-  if(/組立済/.test(s))  return `<span class="chip"><i class="fa-regular fa-circle-check"></i>${s}</span>`;
-  if(/検査中/.test(s))  return `<span class="chip"><i class="fa-regular fa-clipboard"></i>${s}</span>`;
-  if(/検査済/.test(s))  return `<span class="chip"><i class="fa-regular fa-circle-check"></i>${s}</span>`;
-  if(/出荷準備/.test(s))return `<span class="chip"><i class="fa-solid fa-box-open"></i>${s}</span>`;
-  if(/出荷済/.test(s))  return `<span class="chip"><i class="fa-solid fa-truck"></i>${s}</span>`;
-  return `<span class="chip"><i class="fa-regular fa-clock"></i>${s||"—"}</span>`;
-}
+/* ===== Shortcuts ===== */
+const $ = (s)=> document.querySelector(s);
+const fmtDT= (s)=> s? new Date(s).toLocaleString(): '';
+const fmtD = (s)=> s? new Date(s).toLocaleDateString(): '';
+let SESSION=null, CURRENT_PO=null, scanStream=null, scanTimer=null;
+let INV_PREVIEW={info:null, lines:[]};
+let chartsLoaded=false;
 
-/* ================== ROLE & NAV ================== */
-function setUser(u){
-  CURRENT_USER = u || null;
-  const ui = $("#userInfo"); if(ui) ui.textContent = u ? `${u.role||''} / ${u.department||''}` : "";
+/* ===== Visual mapping (badge) ===== */
+const STATUS_CLASS = {
+  '生産開始':'st-begin',
+  '検査工程':'st-inspect',
+  '検査済':'st-inspect',
+  '検査保留':'st-hold',
+  '出荷準備':'st-ready',
+  '出荷済':'st-shipped',
+  '不良品（要リペア）':'st-ng'
+};
+const PROC_CLASS = {
+  'レーザ加工':'prc-laser','曲げ加工':'prc-bend','外枠組立':'prc-frame','シャッター組立':'prc-shassy',
+  'シャッター溶接':'prc-shweld','コーキング':'prc-caulk','外枠塗装':'prc-tosou',
+  '組立（組立中）':'prc-asm-in','組立（組立済）':'prc-asm-ok','外注':'prc-out','検査工程':'prc-inspect'
+};
 
-  // Hide semua nav btn dulu
-  ['btnToDash','btnToSales','btnToPlan','btnToShip','btnToFinPage','btnToInvPage','btnToInvoice','btnToAnalytics','btnAddMember']
-    .forEach(id=>{ const b=$("#"+id); if(b) b.classList.add("hidden"); });
-
-  // Hide semua page, tampilkan auth kalau belum login
-  $$("section[id^='page']").forEach(el=> el.classList.add("hidden"));
-  const auth = $("#authView"); if(auth) auth.classList.toggle("hidden", !!u);
-
-  const btnLogout = $("#btnLogout"); if(btnLogout) btnLogout.classList.toggle("hidden", !u);
-  const wx = $("#weatherWrap"); if(wx) wx.classList.toggle("hidden", !u);
-
-  if(!u){ return; }
-
-  // Role pages
-  const allow = ROLE_MAP[u.role] || ROLE_MAP[u.department] || ROLE_MAP['admin'];
-  if(allow && allow.nav){
-    if(allow.pages.includes('pageDash'))      $("#btnToDash").classList.remove("hidden");
-    if(allow.pages.includes('pageSales'))     $("#btnToSales").classList.remove("hidden");
-    if(allow.pages.includes('pagePlan'))      $("#btnToPlan").classList.remove("hidden");
-    if(allow.pages.includes('pageShip'))      $("#btnToShip").classList.remove("hidden");
-    if(allow.pages.includes('pageFinished'))  $("#btnToFinPage").classList.remove("hidden");
-    if(allow.pages.includes('pageInv'))       $("#btnToInvPage").classList.remove("hidden");
-    if(allow.pages.includes('pageInvoice'))   $("#btnToInvoice").classList.remove("hidden");
-    if(allow.pages.includes('pageAnalytics')) $("#btnToAnalytics").classList.remove("hidden");
-    if(u.role==='admin'){ const add=$("#btnAddMember"); if(add) add.classList.remove("hidden"); }
-  }
-
-  // Lazy init
-  requestIdleCallback(()=> { ensureWeather(); loadMasters().catch(()=>{}); });
-
-  show("pageDash");
-  refreshAll().catch(()=>{});
+/* ===== Service Worker register (fallback) ===== */
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', ()=>{
+    navigator.serviceWorker.getRegistration().then(reg=>{
+      if(!reg){ navigator.serviceWorker.register('./sw.js').catch(console.warn); }
+    });
+  });
 }
 
-function show(id){
-  $$("section[id^='page']").forEach(el=> el.classList.add("hidden"));
-  const sec = $("#"+id); if(sec) sec.classList.remove("hidden");
-}
+/* ===== SWR Cache (localStorage) ===== */
+const SWR = {
+  get(key){ try{ const x=localStorage.getItem(key); return x? JSON.parse(x):null;}catch(e){return null;} },
+  set(key,val){ try{ localStorage.setItem(key, JSON.stringify(val)); }catch(e){} },
+};
 
-/* Bind nav (tanpa ?. pada assignment) */
-setOnClick("#btnToDash",      ()=>{ show("pageDash");      refreshAll(); });
-setOnClick("#btnToSales",     ()=>{ show("pageSales");     loadSales(); });
-setOnClick("#btnToPlan",      ()=>{ show("pagePlan");      loadPlans(); });
-setOnClick("#btnToShip",      ()=>{ show("pageShip");      loadShips(); });
-setOnClick("#btnToFinPage",   ()=>{ show("pageFinished");  loadFinished(); });
-setOnClick("#btnToInvPage",   ()=>{ show("pageInv");       loadInventory(); });
-setOnClick("#btnToInvoice",   ()=>{ show("pageInvoice");   initInvoicePage(); });
-setOnClick("#btnToAnalytics", ()=>{ show("pageAnalytics"); initCharts(); });
-
-/* ================== AUTH ================== */
-setOnClick("#btnLogin", loginSubmit);
-addEvt("#inUser","keydown", e=>{ if(e.key==='Enter') loginSubmit(); });
-addEvt("#inPass","keydown", e=>{ if(e.key==='Enter') loginSubmit(); });
-
-async function loginSubmit(){
-  const uEl=$("#inUser"), pEl=$("#inPass");
-  const u = uEl? uEl.value.trim() : "";
-  const p = pEl? pEl.value.trim() : "";
-  if(!u || !p) return alert("ユーザー名 / パスワード を入力してください");
+/* ===== API helpers (robust) ===== */
+async function apiPost(action, body){
+  const payload={action,...body};
+  if(API_KEY) payload.apiKey=API_KEY;
+  let res, txt;
   try{
-    const me = await jsonp("login",{ username:u, password:p });
-    setUser(me);
-    if(uEl) uEl.value=""; if(pEl) pEl.value="";
-    const lo=$("#btnLogout"); if(lo) lo.classList.remove("hidden");
-
-    // Warm-up agar dashboard cepat terisi
-    Promise.allSettled([
-      cached("listOrders",{},8000),
-      cached("listShip",{},8000),
-      cached("listPlans",{},8000)
-    ]).then(([o,s,p])=>{
-      if(o.status==="fulfilled"){ ORDERS=o.value; renderOrders(); }
-      if(s.status==="fulfilled"){ SHIPS =s.value; }
-      if(p.status==="fulfilled"){ PLANS =p.value; }
+    res = await fetch(API_BASE,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(payload),
+      cache:'no-store'
+    });
+    txt = await res.text();
+  }catch(netErr){ throw new Error('Network error: '+(netErr.message||netErr)); }
+  try{
+    const j = JSON.parse(txt);
+    if(!j.ok) throw new Error(j.error||'API error');
+    return j.data;
+  }catch(parseErr){
+    console.error('API RAW RESPONSE (POST '+action+'):\n', txt);
+    throw new Error('Invalid response (cek deploy/izin API_BASE).');
+  }
+}
+async function apiGet(params, {swrKey=null, revalidate=true} = {}){
+  const url=API_BASE+'?'+new URLSearchParams(params).toString();
+  const key = swrKey || ('GET:'+url);
+  const cached = SWR.get(key);
+  if (cached && revalidate){
+    fetch(url,{cache:'no-store'}).then(r=>r.text()).then(txt=>{
+      try{
+        const j=JSON.parse(txt);
+        if(j.ok){ SWR.set(key, j.data); document.dispatchEvent(new CustomEvent('swr:update',{detail:{key}})); }
+      }catch(_){}
     }).catch(()=>{});
-  }catch(e){
-    alert("ログイン失敗: " + (e && e.message ? e.message : e));
+    return cached;
+  }
+  let res, txt;
+  try{ res=await fetch(url,{cache:'no-store'}); txt=await res.text(); }
+  catch(netErr){ if(cached) return cached; throw new Error('Network error: '+(netErr.message||netErr)); }
+  try{
+    const j=JSON.parse(txt);
+    if(!j.ok) throw new Error(j.error||'API error');
+    SWR.set(key, j.data);
+    return j.data;
+  }catch(parseErr){
+    console.error('API RAW RESPONSE (GET):\n', txt);
+    if(cached) return cached;
+    throw new Error('Invalid response (cek deploy/izin API_BASE).');
   }
 }
-
-setOnClick("#btnLogout", ()=>{
-  try{
-    const d1=$("#dlgScan"); if(d1 && d1.open) d1.close();
-    const d2=$("#dlgOp");   if(d2 && d2.open) d2.close();
-    const d3=$("#dlgAddUser"); if(d3 && d3.open) d3.close();
-  }finally{
-    apiCache.clear();
-    ORDERS=[]; SALES=[]; PLANS=[]; SHIPS=[]; FINISHED=[]; INVENTORY=[]; INVOICES=[];
-    MASTERS={ customers:[], drawings:[], item_names:[], part_nos:[], destinations:[], carriers:[], po_ids:[] };
-    Object.keys(CHARTS).forEach(k=>{ try{ CHARTS[k].destroy(); }catch{}; delete CHARTS[k]; });
-    setUser(null);
+function showApiError(action, err){
+  console.error('API FAIL:', action, err);
+  let bar=document.getElementById('errbar');
+  if(!bar){
+    bar=document.createElement('div');
+    bar.id='errbar';
+    bar.style.cssText='position:fixed;left:12px;right:12px;bottom:12px;background:#fee;border:1px solid #f99;color:#900;padding:10px;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,.08);z-index:9999';
+    document.body.appendChild(bar);
   }
+  bar.innerHTML=`<b>APIエラー</b> <code>${action||'-'}</code> — ${err.message||err}`;
+}
+
+/* ===== Skeleton helpers ===== */
+function tableSkeleton(tbody, rows=7, cols=8){
+  if(!tbody) return;
+  const frag=document.createDocumentFragment();
+  for(let i=0;i<rows;i++){
+    const tr=document.createElement('tr');
+    for(let c=0;c<cols;c++){
+      const td=document.createElement('td');
+      td.innerHTML=`<div class="shimmer" style="height:14px;border-radius:6px"></div>`;
+      tr.appendChild(td);
+    }
+    frag.appendChild(tr);
+  }
+  tbody.innerHTML=''; tbody.appendChild(frag);
+}
+function clearSkeleton(tbody){ if(tbody) tbody.innerHTML=''; }
+
+/* ===== Boot ===== */
+window.addEventListener('DOMContentLoaded', ()=>{
+  ['btnToDash','btnToSales','btnToPlan','btnToShip','btnToInvPage','btnToFinPage','btnToInvoice','btnToCharts']
+    .forEach(id=>{
+      const el=$('#'+id);
+      if(!el) return;
+      const map={
+        btnToDash: ()=> show('pageDash'),
+        btnToSales: ()=> show('pageSales'),
+        btnToPlan: ()=> show('pagePlan'),
+        btnToShip: ()=> show('pageShip'),
+        btnToInvPage: ()=> { show('pageInventory'); renderInventory(); },
+        btnToFinPage: ()=> { show('pageFinished'); renderFinished(); },
+        btnToInvoice: ()=> show('pageInvoice'),
+        btnToCharts: ()=> { show('pageCharts'); ensureChartsLoaded(); }
+      };
+      el.onclick = map[id];
+    });
+
+  // Settings
+  const miStationQR = $('#miStationQR');
+  const miAddUser = $('#miAddUser');
+  const miChangePass = $('#miChangePass');
+  const btnLogoutMenu = $('#btnLogout');
+  if(miStationQR) miStationQR.onclick = openStationQR;
+  if(miAddUser) miAddUser.onclick = openAddUserModal;
+  if(miChangePass) miChangePass.onclick = changePasswordUI;
+  if(btnLogoutMenu)btnLogoutMenu.onclick= ()=>{ SESSION=null; localStorage.removeItem('erp_session'); location.reload(); };
+
+  // Auth
+  const btnLogin = $('#btnLogin');
+  const btnNewUser = $('#btnNewUser');
+  if(btnLogin) btnLogin.onclick = onLogin;
+  if(btnNewUser) btnNewUser.onclick = addUserFromLoginUI;
+
+  // Dashboard
+  const btnRefresh = $('#btnRefresh');
+  const searchQ = $('#searchQ');
+  const btnExportOrders = $('#btnExportOrders');
+  const btnExportShip = $('#btnExportShip');
+  if(btnRefresh) btnRefresh.onclick = refreshAll;
+  if(searchQ) searchQ.addEventListener('input', debounce(renderOrders, 200));
+  if(btnExportOrders) btnExportOrders.onclick = exportOrdersCSV;
+  if(btnExportShip) btnExportShip.onclick = exportShipCSV;
+
+  // Sales
+  const btnSalesSave = $('#btnSalesSave');
+  const btnSalesDelete = $('#btnSalesDelete');
+  const btnSalesExport = $('#btnSalesExport');
+  const btnPromote = $('#btnPromote');
+  const salesQ = $('#salesQ');
+  const btnSalesImport = $('#btnSalesImport');
+  const fileSales = $('#fileSales');
+  if(btnSalesSave) btnSalesSave.onclick = saveSalesUI;
+  if(btnSalesDelete) btnSalesDelete.onclick = deleteSalesUI;
+  if(btnSalesExport) btnSalesExport.onclick = exportSalesCSV;
+  if(btnPromote) btnPromote.onclick = promoteSalesUI;
+  if(salesQ) salesQ.addEventListener('input', debounce(renderSales, 200));
+  if(btnSalesImport) btnSalesImport.onclick = ()=> fileSales && fileSales.click();
+  if(fileSales) fileSales.onchange = (e)=> handleImport(e, 'sales');
+
+  // Plan
+  const btnCreateOrder = $('#btnCreateOrder');
+  const btnPlanExport = $('#btnPlanExport');
+  const btnPlanEdit = $('#btnPlanEdit');
+  const btnPlanDelete = $('#btnPlanDelete');
+  const btnPlanImport = $('#btnPlanImport');
+  const filePlan = $('#filePlan');
+  if(btnCreateOrder) btnCreateOrder.onclick = createOrderUI;
+  if(btnPlanExport) btnPlanExport.onclick = exportOrdersCSV;
+  if(btnPlanEdit) btnPlanEdit.onclick = loadOrderForEdit;
+  if(btnPlanDelete) btnPlanDelete.onclick = deleteOrderUI;
+  if(btnPlanImport) btnPlanImport.onclick = ()=> filePlan && filePlan.click();
+  if(filePlan) filePlan.onchange = (e)=> handleImport(e, 'orders');
+
+  // Ship
+  const btnSchedule = $('#btnSchedule');
+  const btnShipExport = $('#btnShipExport');
+  const btnShipEdit = $('#btnShipEdit');
+  const btnShipDelete = $('#btnShipDelete');
+  const btnShipByPO = $('#btnShipByPO');
+  const btnShipByID = $('#btnShipByID');
+  const btnShipImport = $('#btnShipImport');
+  const fileShip = $('#fileShip');
+  if(btnSchedule) btnSchedule.onclick = scheduleUI;
+  if(btnShipExport) btnShipExport.onclick = exportShipCSV;
+  if(btnShipEdit) btnShipEdit.onclick = loadShipForEdit;
+  if(btnShipDelete) btnShipDelete.onclick = deleteShipUI;
+  if(btnShipByPO) btnShipByPO.onclick = ()=>{ const po=$('#s_po').value.trim(); if(!po) return alert('注番入力'); openShipByPO(po); };
+  if(btnShipByID) btnShipByID.onclick = ()=>{ const id=prompt('Ship ID:'); if(!id) return; openShipByID(id.trim()); };
+  if(btnShipImport) btnShipImport.onclick = ()=> fileShip && fileShip.click();
+  if(fileShip) fileShip.onchange = (e)=> handleImport(e, 'ship');
+
+  // Invoice
+  const btnInvPreview = $('#btnInvPreview');
+  const btnInvCreate = $('#btnInvCreate');
+  const btnInvPrint = $('#btnInvPrint');
+  const btnInvCSV = $('#btnInvCSV');
+  if(btnInvPreview) btnInvPreview.onclick = previewInvoiceUI;
+  if(btnInvCreate) btnInvCreate.onclick = createInvoiceUI;
+  if(btnInvPrint) btnInvPrint.onclick = ()=> openInvoiceDoc(INV_PREVIEW.inv_id||'');
+  if(btnInvCSV) btnInvCSV.onclick = exportInvoiceCSV;
+
+  // Charts page
+  const btnChartsRefresh = $('#btnChartsRefresh');
+  fillChartYearSelector();
+  if(btnChartsRefresh) btnChartsRefresh.onclick = renderCharts;
+
+  // Inventory & Finished filters
+  const invQ = $('#invQ'); if(invQ) invQ.addEventListener('input', debounce(renderInventory, 200));
+  const finQ = $('#finQ'); if(finQ) finQ.addEventListener('input', debounce(renderFinished, 200));
+
+  // Keyboard shortcuts (modal)
+  document.addEventListener('keydown', onGlobalShortcut);
+
+  // SWR update listener
+  document.addEventListener('swr:update', (ev)=>{
+    const key=ev.detail?.key||'';
+    if(key.includes('action=listOrders')) renderOrders().catch(console.warn);
+    if(key.includes('action=listSales')) renderSales().catch(console.warn);
+  });
+
+  // Restore session
+  const saved=localStorage.getItem('erp_session');
+  if(saved){ SESSION=JSON.parse(saved); enter(); } else { show('authView'); }
+
+  // Wire scanner start button
+  const btnScanStart = $('#btnScanStart');
+  if (btnScanStart) btnScanStart.onclick = ()=> initScan();
 });
 
-/* ================== DASHBOARD (Orders) ================== */
-async function loadOrders(){
-  const tb = $("#tbOrders");
-  if(tb) tb.innerHTML = `<tr><td colspan="9" class="muted">読み込み中…</td></tr>`;
+/* ===== Small utils ===== */
+function debounce(fn, ms=150){
+  let t=null; return (...args)=>{ clearTimeout(t); t=setTimeout(()=>fn.apply(null,args), ms); };
+}
+function show(id){
+  const ids=['authView','pageDash','pageSales','pagePlan','pageShip','pageInvoice','pageCharts','pageInventory','pageFinished'];
+  ids.forEach(x=>{ const el=document.getElementById(x); if(el) el.classList.add('hidden'); });
+  const target=document.getElementById(id);
+  if(target) target.classList.remove('hidden');
+
+  const map = {
+    pageDash:'btnToDash', pageSales:'btnToSales', pagePlan:'btnToPlan', pageShip:'btnToShip',
+    pageInventory:'btnToInvPage', pageFinished:'btnToFinPage', pageInvoice:'btnToInvoice', pageCharts:'btnToCharts'
+  };
+  Object.values(map).forEach(b=>{ const el=document.getElementById(b); if(el) el.style.boxShadow='none'; });
+  const activeBtnId = map[id];
+  const btn = activeBtnId && document.getElementById(activeBtnId);
+  if(btn) btn.style.boxShadow='0 8px 22px rgba(16,24,40,.12)';
+}
+
+function onGlobalShortcut(e){
+  const dlg=document.querySelector('dialog[open]');
+  if(!dlg) return;
+  if(e.key.toLowerCase()==='e'){
+    const id=dlg.id;
+    if(id==='dlgHistory') exportHistoryCSV();
+    if(id==='dlgTicket') window.print();
+    if(id==='dlgShip') window.print();
+  }
+  if(e.key.toLowerCase()==='r'){
+    const id=dlg.id;
+    if(id==='dlgHistory'){
+      const inp=dlg.querySelectorAll('input[type="date"]');
+      inp.forEach(x=> x.value='');
+      const q=dlg.querySelector('input[type="text"]'); if(q) q.value='';
+      const list=dlg.querySelector('#histBody'); if(list) list.innerHTML='';
+    }
+  }
+}
+
+/* ===== Enter ===== */
+function enter(){
+  const ui=$('#userInfo');
+  if(ui && SESSION) ui.textContent = `${SESSION.full_name}・${SESSION.department}`;
+  ['btnToDash','btnToSales','btnToPlan','btnToShip','btnToInvPage','btnToFinPage','btnToInvoice','btnToCharts'].forEach(id=>{
+    const el=$('#'+id); if(el) el.classList.remove('hidden');
+  });
+  const dd=$('#ddSetting'); if(dd) dd.classList.remove('hidden');
+  if(!(SESSION.role==='admin' || SESSION.department==='生産技術')){
+    const miAddUser=$('#miAddUser'); if(miAddUser) miAddUser.classList.add('hidden');
+  }
+  show('pageDash');
+  loadMasters();
+  requestIdleCallback(()=> refreshAll(), {timeout:1000});
+}
+
+/* ===== Auth ===== */
+async function onLogin(){
+  const u=$('#inUser')?$('#inUser').value.trim():'';
+  const p=$('#inPass')?$('#inPass').value.trim():'';
   try{
-    ORDERS = await cached("listOrders",{},15000);
-  }catch(e){
-    ORDERS=[];
-    if(tb) tb.innerHTML = `<tr><td colspan="9" class="muted">データ取得に失敗しました (${e.message||e})</td></tr>`;
+    const r=await apiPost('login',{username:u,password:p});
+    SESSION=r; localStorage.setItem('erp_session',JSON.stringify(r));
+    enter();
+  }catch(e){ alert(e.message||e); }
+}
+async function addUserFromLoginUI(){
+  if(!SESSION) return alert('ログインしてください');
+  if(!(SESSION.role==='admin'||SESSION.department==='生産技術')) return alert('権限不足（生産技術）');
+  const payload={
+    username:$('#nuUser')?$('#nuUser').value.trim():'', password:$('#nuPass')?$('#nuPass').value.trim():'',
+    full_name:$('#nuName')?$('#nuName').value.trim():'', department:$('#nuDept')?$('#nuDept').value:'', role:$('#nuRole')?$('#nuRole').value:'member'
+  };
+  if(!payload.username||!payload.password||!payload.full_name) return alert('必須項目');
+  try{ await apiPost('createUser',{user:SESSION,payload}); alert('作成しました'); }
+  catch(e){ alert(e.message||e); }
+}
+async function changePasswordUI(){
+  if(!SESSION) return alert('ログインしてください');
+  const oldPass=prompt('旧パスワード:'); if(oldPass===null) return;
+  const newPass=prompt('新パスワード:'); if(newPass===null) return;
+  try{
+    await apiPost('changePassword',{user:SESSION,oldPass,newPass});
+    alert('変更しました。再ログインしてください。');
+    SESSION=null; localStorage.removeItem('erp_session'); location.reload();
+  }catch(e){ alert(e.message||e); }
+}
+
+/* ===== Masters ===== */
+async function loadMasters(){
+  try{
+    const m=await apiGet({action:'masters',types:'得意先,品名,品番,図番'},{swrKey:'masters'});
+    const fill=(id,arr)=>{ const el=$(id); if(el) el.innerHTML=(arr||[]).map(v=>`<option value="${v}"></option>`).join(''); };
+    fill('#dl_tokui',m['得意先']); fill('#dl_hinmei',m['品名']); fill('#dl_hinban',m['品番']); fill('#dl_zuban',m['図番']);
+  }catch(e){ console.warn(e); }
+}
+
+/* ===== Dashboard (no charts) ===== */
+async function refreshAll(keep=false){
+  try{
+    const s=await apiGet({action:'stock'},{swrKey:'stock'});
+    $('#statFinished').textContent=s.finishedStock;
+    $('#statReady').textContent=s.ready;
+    $('#statShipped').textContent=s.shipped;
+
+    const listToday=$('#listToday');
+    if(listToday) listToday.innerHTML='<div class="shimmer" style="height:16px;border-radius:8px"></div>';
+    const today=await apiGet({action:'todayShip'},{swrKey:'todayShip'});
+    if(listToday){
+      listToday.innerHTML = today.length ? today.map(r=>`<div><span>${r.po_id}</span><span>${fmtD(r.scheduled_date)}・${r.qty}</span></div>`).join('') : '<div class="muted">本日予定なし</div>';
+    }
+
+    const grid=$('#gridProc');
+    if(grid) grid.innerHTML = PROCESSES.map(()=>`<div class="shimmer" style="height:26px;border-radius:8px"></div>`).join('');
+    const loc=await apiGet({action:'locSnapshot'},{swrKey:'locSnapshot'});
+    if(grid) grid.innerHTML = PROCESSES.map(p=> `
+      <div class="grid-chip" style="font-weight:700;color:#0b3b6a">
+        <div class="muted s" style="font-weight:600;color:#475569">${p}</div>
+        <div class="h" style="font-size:18px">${loc[p]||0}</div>
+      </div>`).join('');
+
+    if(!keep){ const q=$('#searchQ'); if(q) q.value=''; }
+    await renderOrders();
+    await renderSales();
+  }catch(e){ console.error(e); }
+}
+
+/* ===== Orders table ===== */
+async function listOrders(){
+  const qEl=$('#searchQ'); const q = qEl ? qEl.value.trim() : '';
+  return apiGet({action:'listOrders',q},{swrKey:'orders'+(q?':'+q:'')});
+}
+async function renderOrders(){
+  const tbody=$('#tbOrders'); if(!tbody) return;
+  tableSkeleton(tbody, 7, 9);
+  const rows=await listOrders();
+  const frag=document.createDocumentFragment();
+  rows.forEach(r=>{
+    const tr=document.createElement('tr');
+    const statusName = r.status || ''; const procName = r.current_process || '';
+    const stClass = STATUS_CLASS[statusName] || 'st-begin'; const prClass = PROC_CLASS[procName] || 'prc-out';
+
+    const leftCell = `
+      <div class="row-main">
+        <a href="javascript:void(0)" onclick="openTicket('${r.po_id}')" class="link"><b>${r.po_id}</b></a>
+        <div class="row-sub">
+          <div class="kv"><span class="muted">得意先:</span> <b>${r['得意先']||'-'}</b></div>
+          ${r['製番号']?`<div class="kv"><span class="muted">製番号:</span> <b>${r['製番号']}</b></div>`:''}
+          ${(r['品番']||r['図番'])?`<div class="kv"><span class="muted">品番/図番:</span> <b>${r['品番']||''}/${r['図番']||''}</b></div>`:''}
+        </div>
+      </div>`;
+
+    const statusBadge = `<span class="badge ${stClass}"><span class="dot"></span><span>${statusName||'-'}</span></span>`;
+    const procBadge = `<span class="badge ${prClass}"><span class="dot"></span><span>${procName||'-'}</span></span>`;
+
+    const actions = `
+      <div class="actions-2col">
+        <button class="btn ghost s" onclick="openTicket('${r.po_id}')"><i class="fa-regular fa-file-lines"></i> 票</button>
+        <button class="btn ghost s" onclick="startScanFor('${r.po_id}')"><i class="fa-solid fa-qrcode"></i> 更新</button>
+        <button class="btn ghost s" onclick="openShipByPO('${r.po_id}')"><i class="fa-solid fa-truck"></i> 出荷票</button>
+        <button class="btn ghost s" onclick="openHistory('${r.po_id}')"><i class="fa-solid fa-clock-rotate-left"></i> 履歴</button>
+      </div>`;
+
+    tr.innerHTML = `
+      <td>${leftCell}</td>
+      <td>${r['品名']||''}</td>
+      <td>${r['品番']||''}</td>
+      <td>${r['図番']||''}</td>
+      <td class="col-status">${statusBadge}</td>
+      <td class="col-proc">${procBadge}</td>
+      <td class="s muted">${fmtDT(r.updated_at)}</td>
+      <td class="s muted">${r.updated_by||''}</td>
+      <td class="s">${actions}</td>
+    `;
+    frag.appendChild(tr);
+  });
+  clearSkeleton(tbody); tbody.appendChild(frag);
+}
+
+/* ===== Sales (営業) ===== */
+async function renderSales(){
+  const tbody=$('#tbSales'); if(!tbody) return;
+  tableSkeleton(tbody, 7, 10);
+  const qEl=$('#salesQ'); const q=(qEl&&qEl.value)? qEl.value.trim():'';
+  const rows=await apiGet({action:'listSales',q},{swrKey:'sales'+(q?':'+q:'')});
+  tbody.innerHTML = rows.map(r=> `
+    <tr>
+      <td>${r.so_id||''}</td>
+      <td class="s muted">${fmtD(r['受注日'])}</td>
+      <td>${r['得意先']||''}</td>
+      <td>${r['品名']||''}</td>
+      <td>${(r['品番']||'')}/${(r['図番']||'')}</td>
+      <td>${r['数量']||0}</td>
+      <td class="s muted">${fmtD(r['希望納期'])}</td>
+      <td><span class="badge">${r.status||''}</span></td>
+      <td>${r['linked_po_id']||''}</td>
+      <td class="s muted">${fmtDT(r['updated_at'])}</td>
+    </tr>`).join('');
+}
+async function saveSalesUI(){
+  const p={
+    '受注日':$('#so_date')?$('#so_date').value:'', '得意先':$('#so_cust')?$('#so_cust').value:'',
+    '品名':$('#so_item')?$('#so_item').value:'', '品番':$('#so_part')?$('#so_part').value:'',
+    '図番':$('#so_drw')?$('#so_drw').value:'', '製番号':$('#so_sei')?$('#so_sei').value:'', 
+    '数量':$('#so_qty')?$('#so_qty').value:'', '希望納期':$('#so_req')?$('#so_req').value:'',
+    '備考':$('#so_note')?$('#so_note').value:''
+  };
+  const soEl=$('#so_id'); const so=soEl?soEl.value.trim():'';
+  try{
+    if(so){ await apiPost('updateSalesOrder',{so_id:so,updates:p,user:SESSION}); alert('受注を更新しました'); }
+    else { const r=await apiPost('createSalesOrder',{payload:p,user:SESSION}); alert('受注登録: '+r.so_id); if(soEl) soEl.value=r.so_id; }
+    renderSales();
+  }catch(e){ alert(e.message||e); }
+}
+async function deleteSalesUI(){
+  const soEl=$('#so_id'); const so=soEl?soEl.value.trim():'';
+  if(!so) return alert('SO入力'); if(!confirm('削除しますか？')) return;
+  try{ const r=await apiPost('deleteSalesOrder',{so_id:so,user:SESSION}); alert('削除: '+r.deleted); renderSales(); }
+  catch(e){ alert(e.message||e); }
+}
+async function promoteSalesUI(){
+  const soEl=$('#so_id'); const so=soEl?soEl.value.trim():'';
+  if(!so) return alert('SO入力');
+  try{ const r=await apiPost('promoteSalesToPlan',{so_id:so,user:SESSION}); alert('生産計画を作成: '+r.po_id); refreshAll(); }
+  catch(e){ alert(e.message||e); }
+}
+async function exportSalesCSV(){ const rows=await apiGet({action:'listSales'},{swrKey:'sales'}); downloadCSV('sales_orders.csv', rows); }
+
+/* ===== Plan CRUD ===== */
+async function createOrderUI(){
+  if(!(SESSION && (SESSION.role==='admin'||SESSION.department==='生産技術'||SESSION.department==='生産管理部'))) return alert('権限不足');
+  const p={
+    '通知書番号':$('#c_tsuchi')?$('#c_tsuchi').value.trim():'', '得意先':$('#c_tokui')?$('#c_tokui').value.trim():'',
+    '得意先品番':$('#c_tokui_hin')?$('#c_tokui_hin').value.trim():'', '製番号':$('#c_sei')?$('#c_sei').value.trim():'',
+    '品名':$('#c_hinmei')?$('#c_hinmei').value.trim():'', '品番':$('#c_hinban')?$('#c_hinban').value.trim():'',
+    '図番':$('#c_zuban')?$('#c_zuban').value.trim():'', '管理No':$('#c_kanri')?$('#c_kanri').value.trim():''
+  };
+  const editingPoEl=$('#c_po'); const editingPo=editingPoEl?editingPoEl.value.trim():'';
+  try{
+    if(editingPo){ await apiPost('updateOrder',{po_id:editingPo,updates:p,user:SESSION}); alert('編集保存しました'); }
+    else{ const r=await apiPost('createOrder',{payload:p,user:SESSION}); alert('作成: '+r.po_id); if(editingPoEl) editingPoEl.value=r.po_id; }
+    refreshAll();
+  }catch(e){ alert(e.message||e); }
+}
+async function loadOrderForEdit(){
+  const poEl=$('#c_po'); const po=poEl?poEl.value.trim():'';
+  if(!po) return alert('注番入力');
+  try{
+    const o=await apiGet({action:'ticket',po_id:po});
+    const set=(id,v)=>{ const el=$(id); if(el) el.value=v||''; };
+    set('#c_tsuchi',o['通知書番号']); set('#c_tokui',o['得意先']); set('#c_tokui_hin',o['得意先品番']);
+    set('#c_sei',o['製番号']); set('#c_hinmei',o['品名']); set('#c_hinban',o['品番']); set('#c_zuban',o['図番']); set('#c_kanri',o['管理No']);
+    alert('読み込み完了。');
+  }catch(e){ alert(e.message||e); }
+}
+async function deleteOrderUI(){
+  if(!(SESSION && (SESSION.role==='admin'||SESSION.department==='生産技術'||SESSION.department==='生産管理部'))) return alert('権限不足');
+  const poEl=$('#c_po'); const po=poEl?poEl.value.trim():'';
+  if(!po) return alert('注番入力'); if(!confirm('削除しますか？')) return;
+  try{ const r=await apiPost('deleteOrder',{po_id:po,user:SESSION}); alert('削除:'+r.deleted); refreshAll(); }
+  catch(e){ alert(e.message||e); }
+}
+
+/* ===== Ship CRUD ===== */
+async function scheduleUI(){
+  if(!(SESSION && (SESSION.role==='admin'||SESSION.department==='生産技術'||SESSION.department==='生産管理部'))) return alert('権限不足');
+  const poEl=$('#s_po'); const dateEl=$('#s_date'); const qtyEl=$('#s_qty'); const idEl=$('#s_shipid');
+  const po = poEl?poEl.value.trim():'', dateIso=dateEl?dateEl.value:'', qty=qtyEl?qtyEl.value:'';
+  if(!po||!dateIso) return alert('注番と日付');
+  try{
+    const shipId=idEl?idEl.value.trim():'';
+    if(shipId){ await apiPost('updateShipment',{ship_id:shipId,updates:{po_id:po,scheduled_date:dateIso,qty:qty},user:SESSION}); alert('出荷予定を編集しました'); }
+    else{ const r=await apiPost('scheduleShipment',{po_id:po,dateIso,qty,user:SESSION}); alert('登録: '+r.ship_id); }
+    refreshAll(true);
+  }catch(e){ alert(e.message||e); }
+}
+async function loadShipForEdit(){
+  const idEl=$('#s_shipid'); const sid=idEl?idEl.value.trim():'';
+  if(!sid) return alert('Ship ID入力');
+  try{
+    const d=await apiGet({action:'shipById',ship_id:sid});
+    const set=(id,v)=>{ const el=$(id); if(el) el.value=v||''; };
+    set('#s_po', d.shipment.po_id||'');
+    set('#s_date', d.shipment.scheduled_date? new Date(d.shipment.scheduled_date).toISOString().slice(0,10):'');
+    set('#s_qty', d.shipment.qty||0);
+    alert('読み込み完了。');
+  }catch(e){ alert(e.message||e); }
+}
+async function deleteShipUI(){
+  if(!(SESSION && (SESSION.role==='admin'||SESSION.department==='生産技術'||SESSION.department==='生産管理部'))) return alert('権限不足');
+  const idEl=$('#s_shipid'); const sid=idEl?idEl.value.trim():'';
+  if(!sid) return alert('Ship ID入力'); if(!confirm('削除しますか？')) return;
+  try{ const r=await apiPost('deleteShipment',{ship_id:sid,user:SESSION}); alert('削除:'+r.deleted); refreshAll(true); }
+  catch(e){ alert(e.message||e); }
+}
+
+/* ===== Docs ===== */
+async function openTicket(po_id){
+  try{
+    const o=await apiGet({action:'ticket',po_id});
+    const body=`<h3>生産現品票</h3><table>
+      <tr><th>管理No</th><td>${o['管理No']||'-'}</td><th>通知書番号</th><td>${o['通知書番号']||'-'}</td></tr>
+      <tr><th>得意先</th><td>${o['得意先']||''}</td><th>得意先品番</th><td>${o['得意先品番']||''}</td></tr>
+      <tr><th>製番号</th><td>${o['製番号']||''}</td><th>投入日</th><td>${o['created_at']?new Date(o['created_at']).toLocaleDateString():'-'}</td></tr>
+      <tr><th>品名</th><td>${o['品名']||''}</td><th>品番/図番</th><td>${(o['品番']||'')+' / '+(o['図番']||'')}</td></tr>
+      <tr><th>工程</th><td colspan="3">${o.current_process||''}</td></tr>
+      <tr><th>状態</th><td>${o.status||''}</td><th>更新</th><td>${fmtDT(o.updated_at)} / ${o.updated_by||''}</td></tr></table>`;
+    showDoc('dlgTicket',body);
+  }catch(e){ alert(e.message||e); }
+}
+function showDoc(id, html){
+  const dlg=document.getElementById(id);
+  if(!dlg) return;
+  const body=dlg.querySelector('.body'); if(body) body.innerHTML=html;
+  dlg.showModal();
+}
+
+/* ==== History / Ship docs ==== */
+async function openHistory(po_id){
+  try{
+    const data=await apiGet({action:'history',po_id});
+    const rows=(data||[]).map(x=>`
+      <div class="row s" style="gap:.5rem;border-bottom:1px solid var(--border);padding:.25rem 0">
+        <span class="muted">${fmtDT(x.timestamp)}</span>
+        <span>${x.updated_by||''}</span>
+        <span class="badge ${STATUS_CLASS[x.new_status]||'st-begin'}">${x.prev_status||''} → ${x.new_status||''}</span>
+        <span class="badge ${PROC_CLASS[x.new_process]||'prc-out'}">${x.prev_process||''} → ${x.new_process||''}</span>
+        ${x.note?`<span class="muted">「${x.note}」</span>`:''}
+      </div>`).join('');
+    const html=`<h3>更新履歴（PO: ${po_id}）</h3>
+      <div class="row gap" style="margin:.35rem 0">
+        <button class="btn ghost s" onclick="exportHistoryCSV()"><i class="fa-solid fa-file-csv"></i> CSV</button>
+      </div>
+      <div id="histBody">${rows||'<div class="muted s">履歴なし</div>'}</div>`;
+    showDoc('dlgHistory', html);
+    window._histForCSV = data||[];
+  }catch(e){ alert(e.message||e); }
+}
+function exportHistoryCSV(){
+  const data = window._histForCSV||[];
+  downloadCSV('history.csv', data);
+}
+async function openShipByPO(po){
+  try{
+    const d=await apiGet({action:'shipByPo',po_id:po});
+    showShipDoc(d.shipment, d.order);
+  }catch(e){ alert(e.message||e); }
+}
+async function openShipByID(id){
+  try{
+    const d=await apiGet({action:'shipById',ship_id:id});
+    showShipDoc(d.shipment, d.order);
+  }catch(e){ alert(e.message||e); }
+}
+function showShipDoc(s,o){
+  const dt=s.scheduled_date? new Date(s.scheduled_date):null;
+  const body=`<h3>出荷確認書</h3><table>
+    <tr><th>得意先</th><td>${o['得意先']||''}</td><th>出荷日</th><td>${dt?dt.toLocaleDateString():'-'}</td></tr>
+    <tr><th>PO</th><td>${s.po_id}</td><th>数量</th><td>${s.qty||0}</td></tr>
+    <tr><th>品名</th><td>${o['品名']||''}</td><th>品番/図番</th><td>${(o['品番']||'')+' / '+(o['図番']||'')}</td></tr>
+    <tr><th>状態</th><td colspan="3">${o.status||''}</td></tr></table>`;
+  showDoc('dlgShip', body);
+}
+
+/* ===== QR Station & Scan ===== */
+function openStationQR(){
+  const dlg=$('#dlgStationQR'); const wrap=$('#qrWrap'); if(!dlg||!wrap) return;
+  wrap.innerHTML = PROCESSES.map(p=>`<div id="qr-${p}" style="display:flex;flex-direction:column;align-items:center;gap:.35rem">
+      <div class="muted s">${p}</div><div class="qrbox" data-text="ST:${p}"></div></div>`).join('');
+  dlg.showModal();
+  setTimeout(()=>{
+    wrap.querySelectorAll('.qrbox').forEach(div=>{
+      const t=div.dataset.text;
+      new QRCode(div,{text:t,width:120,height:120});
+    });
+  },0);
+}
+function openAddUserModal(){ alert('ユーザー追加はログイン画面で対応しています。'); }
+function startScanFor(po){
+  CURRENT_PO=po;
+  const dlg=$('#dlgScan'); if(!dlg) return;
+  dlg.showModal();
+  $('#scanPO').textContent=po;
+  initScan();
+}
+async function initScan(){
+  const video=$('#scanVideo'), canvas=$('#scanCanvas'), result=$('#scanResult');
+  if(!video||!canvas) return;
+  try{
+    scanStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+    video.srcObject=scanStream; await video.play();
+    const ctx=canvas.getContext('2d');
+    scanTimer = setInterval(async ()=>{
+      if(video.readyState!==video.HAVE_ENOUGH_DATA) return;
+      canvas.width=video.videoWidth; canvas.height=video.videoHeight;
+      ctx.drawImage(video,0,0,canvas.width,canvas.height);
+      const img=ctx.getImageData(0,0,canvas.width,canvas.height);
+      const code=jsQR(img.data, img.width, img.height);
+      if(code && code.data){
+        result.textContent='読み取り: '+code.data;
+        const token=String(code.data||'');
+        const [prefix, station] = token.split(':');
+        if(prefix==='ST' && station && CURRENT_PO){
+          try{
+            const o=await apiGet({action:'ticket',po_id:CURRENT_PO});
+            const rule=STATION_RULES[station] || ((_o)=>({current_process:station}));
+            const updates=rule(o) || {};
+            // KOREKSI: kirim 'updates' ke backend
+            await apiPost('updateOrder',{po_id:CURRENT_PO,updates:updates,user:SESSION});
+            alert('更新しました'); refreshAll(true);
+          }catch(e){ alert(e.message||e); }
+        }
+        stopScan();
+        $('#dlgScan').close();
+      }
+    }, 300);
+  }catch(e){ alert('カメラ起動不可: '+(e.message||e)); }
+}
+function stopScan(){
+  if(scanTimer){ clearInterval(scanTimer); scanTimer=null; }
+  if(scanStream){ scanStream.getTracks().forEach(t=>t.stop()); scanStream=null; }
+}
+const btnScanClose=$('#btnScanClose'); if(btnScanClose) btnScanClose.onclick=()=>{ stopScan(); $('#dlgScan').close(); };
+
+/* ===== Inventory & Finished ===== */
+async function renderInventory(){
+  const tbody=$('#tbInv'); if(!tbody) return;
+  tableSkeleton(tbody, 8, 8);
+  const qEl=$('#invQ'); const q=(qEl&&qEl.value)? qEl.value.trim():'';
+  const rows=await apiGet({action:'listInventory',q},{swrKey:'inv'+(q?':'+q:'')});
+  tbody.innerHTML = rows.map(r=> `
+    <tr>
+      <td>
+        <div class="row-main">
+          <b>${r.po_id}</b>
+          <div class="row-sub">
+            <div class="kv"><span class="muted">得意先:</span> <b>${r['得意先']||'-'}</b></div>
+          </div>
+        </div>
+      </td>
+      <td>${r['品名']||''}</td>
+      <td>${r['品番']||''}</td>
+      <td>${r['図番']||''}</td>
+      <td><span class="badge ${STATUS_CLASS[r.status]||'st-begin'}">${r.status||''}</span></td>
+      <td><span class="badge ${PROC_CLASS[r.current_process]||'prc-out'}">${r.current_process||''}</span></td>
+      <td class="s muted">${fmtDT(r.updated_at)}</td>
+      <td class="s muted">${r.updated_by||''}</td>
+    </tr>`).join('');
+}
+async function renderFinished(){
+  const tbody=$('#tbFin'); if(!tbody) return;
+  tableSkeleton(tbody, 8, 8);
+  const qEl=$('#finQ'); const q=(qEl&&qEl.value)? qEl.value.trim():'';
+  const rows=await apiGet({action:'listFinished',q},{swrKey:'fin'+(q?':'+q:'')});
+  tbody.innerHTML = rows.map(r=> `
+    <tr>
+      <td>
+        <div class="row-main">
+          <b>${r.po_id}</b>
+          <div class="row-sub">
+            <div class="kv"><span class="muted">得意先:</span> <b>${r['得意先']||'-'}</b></div>
+          </div>
+        </div>
+      </td>
+      <td>${r['品名']||''}</td>
+      <td>${r['品番']||''}</td>
+      <td>${r['図番']||''}</td>
+      <td><span class="badge ${STATUS_CLASS[r.status]||'st-begin'}">${r.status||''}</span></td>
+      <td><span class="badge ${PROC_CLASS[r.current_process]||'prc-out'}">${r.current_process||''}</span></td>
+      <td class="s muted">${fmtDT(r.updated_at)}</td>
+      <td class="s muted">${r.updated_by||''}</td>
+    </tr>`).join('');
+}
+
+/* ===== Invoice ===== */
+async function previewInvoiceUI(){
+  const info={
+    customer: $('#inv_customer')?$('#inv_customer').value.trim():'',
+    from: $('#inv_from')?$('#inv_from').value:'',
+    to: $('#inv_to')?$('#inv_to').value:'',
+  };
+  if(!info.from||!info.to) return alert('期間（自/至）を入力');
+  try{
+    const d=await apiGet({action:'previewInvoice',customer:info.customer,from:info.from,to:info.to});
+    INV_PREVIEW.info = {
+      得意先: d.info.得意先, 期間自: d.info.期間自, 期間至: d.info.期間至,
+      請求日: $('#inv_date')?$('#inv_date').value || new Date().toISOString().slice(0,10): new Date(),
+      通貨: $('#inv_currency')?$('#inv_currency').value:'JPY', メモ: $('#inv_memo')?$('#inv_memo').value:''
+    };
+    INV_PREVIEW.lines = d.lines.map(l=> ({...l, 単価: l.単価||0, 金額: (l.数量||0)*(l.単価||0)}));
+    renderInvoiceLines();
+  }catch(e){ alert(e.message||e); }
+}
+function renderInvoiceLines(){
+  const tb=$('#invLines'); if(!tb) return;
+  let sub=0;
+  tb.innerHTML = INV_PREVIEW.lines.map((l,i)=>{
+    const amount = Number(l.数量||0)*Number(l.単価||0); sub+=amount;
+    return `<tr>
+      <td>${i+1}</td>
+      <td>${l.品名||''}</td><td>${l.品番||''}</td><td>${l.図番||''}</td>
+      <td>${l.数量||0}</td>
+      <td contenteditable oninput="onInvPriceChange(${i}, this.innerText)">${l.単価||0}</td>
+      <td>${amount}</td>
+      <td>${l.PO||l.POs||''}</td>
+      <td>${l.出荷ID||l.出荷IDs||''}</td>
+    </tr>`;
+  }).join('');
+  const tax=Math.round(sub*0.1), total=sub+tax;
+  $('#invSub').textContent=sub; $('#invTax').textContent=tax; $('#invTotal').textContent=total;
+}
+function onInvPriceChange(idx, v){
+  const price=Number(String(v).replace(/[^\d.]/g,''))||0;
+  if(!INV_PREVIEW.lines[idx]) return;
+  INV_PREVIEW.lines[idx].単価=price;
+  renderInvoiceLines();
+}
+async function createInvoiceUI(){
+  if(!(SESSION && (SESSION.role==='admin'||SESSION.department==='生産技術'||SESSION.department==='生産管理部'))) return alert('権限不足');
+  if(!INV_PREVIEW.info || !INV_PREVIEW.lines.length) return alert('先に集計してください');
+  try{
+    const payload={info: INV_PREVIEW.info, lines: INV_PREVIEW.lines};
+    const r=await apiPost('createInvoice',{payload,user:SESSION});
+    INV_PREVIEW.inv_id = r.inv_id;
+    alert(`発行しました: ${r.inv_id}（合計: ${r.合計}）`);
+  }catch(e){ alert(e.message||e); }
+}
+async function openInvoiceDoc(inv_id){
+  if(!inv_id){ alert('請求書IDがありません'); return; }
+  try{
+    const d=await apiGet({action:'invoiceDoc',inv_id});
+    const head=d.inv||{};
+    const body=`<h3>請求書</h3><table>
+      <tr><th>請求書</th><td>${head.inv_id}</td><th>請求日</th><td>${fmtD(head['請求日'])}</td></tr>
+      <tr><th>得意先</th><td>${head['得意先']}</td><th>期間</th><td>${fmtD(head['期間自'])}〜${fmtD(head['期間至'])}</td></tr>
+      <tr><th>小計</th><td>${head['小計']}</td><th>合計</th><td>${head['合計']}</td></tr>
+    </table>
+    <h4>明細</h4>
+    <table><thead><tr><th>#</th><th>品名</th><th>数量</th><th>単価</th><th>金額</th><th>PO</th><th>出荷ID</th></tr></thead>
+    <tbody>${(d.lines||[]).map(l=>`<tr><td>${l['行No']}</td><td>${l['品名']}</td><td>${l['数量']}</td><td>${l['単価']}</td><td>${l['金額']}</td><td>${l['PO']}</td><td>${l['出荷ID']}</td></tr>`).join('')}</tbody></table>`;
+    showDoc('dlgTicket', body);
+  }catch(e){ alert(e.message||e); }
+}
+
+/* ===== Charts ===== */
+function ensureChartsLoaded(){ renderCharts().catch(console.warn); }
+function fillChartYearSelector(){
+  const sel=$('#chartYear'); if(!sel) return;
+  const y=(new Date()).getFullYear();
+  sel.innerHTML=[y-2,y-1,y,y+1].map(v=>`<option value="${v}" ${v===y?'selected':''}>${v}</option>`).join('');
+}
+async function renderCharts(){
+  try{
+    const d=await apiGet({action:'charts'},{swrKey:'charts'});
+    const year=d.year|| (new Date()).getFullYear();
+    if($('#chartYear')) $('#chartYear').value=year;
+    const ms=(arr)=>({labels:['1','2','3','4','5','6','7','8','9','10','11','12'], datasets:[{label:'数量', data:arr}]});
+    drawBar('chMonthly', ms(d.perMonth));
+    drawPie('chCustomer', d.perCust||{});
+    drawPie('chStock', d.stockBuckets||{});
+    drawBar('chWipProc', {labels:Object.keys(d.wipByProcess||{}), datasets:[{label:'点数', data:Object.values(d.wipByProcess||{})}]});
+    drawBar('chSales', ms(d.salesPerMonth||[]));
+    drawBar('chPlan', ms(d.planPerMonth||[]));
+  }catch(e){ console.warn(e); }
+}
+function drawBar(id, data){
+  const ctx=document.getElementById(id); if(!ctx) return;
+  new Chart(ctx, {type:'bar', data, options:{responsive:true, maintainAspectRatio:false, animation:{duration:300}}});
+}
+function drawPie(id, obj){
+  const ctx=document.getElementById(id); if(!ctx) return;
+  new Chart(ctx, {type:'doughnut', data:{labels:Object.keys(obj), datasets:[{data:Object.values(obj)}]}, options:{responsive:true, maintainAspectRatio:false, animation:{duration:300}}});
+}
+
+/* ===== Import CSV/Excel ===== */
+function downloadCSV(filename, rows){
+  const head = rows && rows.length ? Object.keys(rows[0]) : [];
+  const csv = [head.join(','), ...(rows||[]).map(r=> head.map(h=> JSON.stringify(r[h]??'')).join(','))].join('\n');
+  const blob=new Blob([csv],{type:'text/csv;charset=utf-8;'}), url=URL.createObjectURL(blob);
+  const a=document.createElement('a'); a.href=url; a.download=filename; a.click(); setTimeout(()=>URL.revokeObjectURL(url), 1000);
+}
+async function exportOrdersCSV(){ const rows=await apiGet({action:'listOrders'},{swrKey:'orders'}); downloadCSV('orders.csv', rows); }
+async function exportShipCSV(){ const rows=await apiGet({action:'todayShip'},{swrKey:'todayShip'}); downloadCSV('today_ship.csv', rows); }
+function exportInvoiceCSV(){
+  if (!INV_PREVIEW || !INV_PREVIEW.lines || !INV_PREVIEW.lines.length){
+    alert('先に「集計（出荷済）」を実行してください。');
     return;
   }
-  renderOrders();
-  loadShipsMini().catch(()=>{});
-}
-
-function renderOrders(){
-  const qEl=$("#searchQ");
-  const q = qEl ? (qEl.value||"").trim().toLowerCase() : "";
-  const rows = (ORDERS||[]).filter(r=> !q || JSON.stringify(r).toLowerCase().includes(q));
-  const tb = $("#tbOrders"); if(!tb) return;
-  tb.innerHTML = "";
-  const chunk = 120; let i = 0;
-  (function paint(){
-    const end = Math.min(i+chunk, rows.length);
-    const frag = document.createDocumentFragment();
-    for(; i<end; i++){
-      const r = rows[i]||{};
-      const ok = Number(r.ok_count||0), ng = Number(r.ng_count||0);
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td>
-          <div class="s muted">注番</div>
-          <div><b>${r.po_id||""}</b></div>
-          <div class="muted s">${r["得意先"]||"—"}</div>
-        </td>
-        <td>${r["品名"]||"—"}</td>
-        <td>${r["品番"]||"—"}</td>
-        <td>${r["図番"]||"—"}</td>
-        <td class="center">${statusToBadge(r.status)}</td>
-        <td class="center">
-          <div class="cell-stack">
-            ${procToChip(r.current_process)}
-            <div class="row">
-              <span class="chip" style="background:#e2fbe2">OK:${ok}</span>
-              <span class="chip" style="background:#ffe4e6">NG:${ng}</span>
-            </div>
-          </div>
-        </td>
-        <td class="center">${fmt(r.updated_at)}</td>
-        <td class="center">${r.updated_by||"—"}</td>
-        <td class="center">
-          <div class="row">
-            <button class="btn ghost btn-stqr" title="工程QR"><i class="fa-solid fa-qrcode"></i> 工程QR</button>
-            <button class="btn ghost btn-scan" data-po="${r.po_id||''}" title="スキャン"><i class="fa-solid fa-camera"></i> スキャン</button>
-            <button class="btn ghost btn-op" data-po="${r.po_id||''}" title="手入力"><i class="fa-solid fa-keyboard"></i> 手入力</button>
-          </div>
-        </td>`;
-      frag.appendChild(tr);
-    }
-    tb.appendChild(frag);
-    if(i < rows.length) requestIdleCallback(paint);
-    if(i>=rows.length){
-      $$(".btn-stqr",tb).forEach(b=> b.onclick = openStationQrSheet);
-      $$(".btn-scan",tb).forEach(b=> b.onclick=(e)=> openScanDialog(e.currentTarget.dataset.po));
-      $$(".btn-op",tb).forEach(b=> b.onclick=(e)=> openOpDialog(e.currentTarget.dataset.po));
-      if(!rows.length) tb.innerHTML = `<tr><td colspan="9" class="muted">データがありません</td></tr>`;
-    }
-  })();
-}
-addEvt("#searchQ","input", debounce(renderOrders, 250));
-setOnClick("#btnExportOrders", ()=> exportTableCSV("#tbOrders","orders.csv"));
-async function refreshAll(){ await loadOrders(); }
-
-/* ================== SALES ================== */
-async function loadSales(){
-  const rows = ORDERS.length ? ORDERS : await cached("listOrders",{},15000);
-  SALES = rows;
-  renderGenericTable("#thSales","#tbSales",rows,[
-    "po_id","得意先","品名","品番","図番","status","current_process","ok_count","ng_count","updated_at","updated_by"
-  ]);
-  attachSearch("#salesSearch","#tbSales");
-  setOnClick("#btnSalesExport", ()=> exportTableCSV("#tbSales","sales.csv"));
-  setOnClick("#btnSalesPrint",  ()=> window.print());
-  setOnClick("#btnSalesCreate", ()=> openFormDialog("受注 作成", [
-    {key:"po_id", label:"注番"},
-    {key:"得意先", label:"得意先"},
-    {key:"品名", label:"品名"},
-    {key:"品番", label:"品番"},
-    {key:"図番", label:"図番"},
-  ], async ()=>{ alert("デモ: 作成ハンドラはバックエンド未実装"); }));
-}
-
-/* ================== PLANS ================== */
-async function loadPlans(){
-  try{ PLANS = await cached("listPlans",{},30000); }catch{ PLANS=[]; }
-  renderGenericTable("#thPlan", "#tbPlan", PLANS, ["po_id","工程","開始予定","終了予定","担当","メモ","状態"]);
-  attachSearch("#planSearch","#tbPlan");
-  setOnClick("#btnPlanExport", ()=> exportTableCSV("#tbPlan","plans.csv"));
-  setOnClick("#btnPlanPrint",  ()=> window.print());
-  setOnClick("#btnPlanCreate", ()=> openFormDialog("生産計画 作成", [
-    {key:"po_id",label:"注番"},
-    {key:"工程",label:"工程"},
-    {key:"開始予定",label:"開始予定"},
-    {key:"終了予定",label:"終了予定"},
-    {key:"担当",label:"担当"},
-    {key:"メモ",label:"メモ"}
-  ], async ()=>{ alert("デモ: 作成ハンドラはバックエンド未実装"); }));
-}
-
-/* ================== SHIPS ================== */
-async function loadShips(){
-  try{ SHIPS = await cached("listShip",{},30000); }catch{ SHIPS=[]; }
-  renderGenericTable("#thShip", "#tbShip", SHIPS, ["po_id","得意先","品名","品番","数量","送付先","出荷日","納入日","運送会社","備考","状態"]);
-  attachSearch("#shipSearch","#tbShip");
-  setOnClick("#btnShipExport", ()=> exportTableCSV("#tbShip","shipments.csv"));
-  setOnClick("#btnShipPrint",  ()=> window.print());
-  // shortcut buat rencana dari Ship (jika tombol ada di HTML)
-  setOnClick("#btnPlanCreate", ()=> openFormDialog("生産計画 作成", [
-    {key:"po_id",label:"注番"},
-    {key:"工程",label:"工程"},
-    {key:"開始予定",label:"開始予定"},
-    {key:"終了予定",label:"終了予定"},
-    {key:"担当",label:"担当"},
-    {key:"メモ",label:"メモ"}
-  ], async (data)=>{
-    if(!data.po_id) throw new Error("注番は必須です");
-    await jsonp("savePlan", data);
-    alert("保存しました");
-    PLANS = await cached("listPlans",{},0);
-    renderGenericTable("#thPlan", "#tbPlan", PLANS, ["po_id","工程","開始予定","終了予定","担当","メモ","状態"]);
+  const head = ['#','品名','品番','図番','数量','単価','金額','PO','出荷ID'];
+  const rows = INV_PREVIEW.lines.map((l,i)=>({
+    '#': i+1,
+    '品名': l.品名||'',
+    '品番': l.品番||'',
+    '図番': l.図番||'',
+    '数量': l.数量||0,
+    '単価': l.単価||0,
+    '金額': (Number(l.数量||0)*Number(l.単価||0))||0,
+    'PO': l.PO || l.POs || '',
+    '出荷ID': l.出荷ID || l.出荷IDs || ''
   }));
-}
-async function loadShipsMini(){
-  try{
-    const ship = SHIPS.length ? SHIPS : await cached("listShip",{},30000);
-    const today = new Date().toISOString().slice(0,10);
-    const todayRows = ship.filter(r => String(r['出荷予定日']||r['出荷日']||'').startsWith(today));
-    const t1=$("#shipToday"), t2=$("#shipPlan");
-    if(t1) t1.textContent = todayRows.length? `${todayRows.length} 件` : "—";
-    if(t2) t2.textContent = ship.length? `${ship.length} 件` : "—";
-  }catch(e){
-    const t1=$("#shipToday"), t2=$("#shipPlan");
-    if(t1) t1.textContent = "—";
-    if(t2) t2.textContent = "—";
-  }
+  const csv = [head.join(','), ...rows.map(r=> head.map(h=> JSON.stringify(r[h]??'')).join(','))].join('\n');
+  const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'invoice_lines.csv'; a.click();
+  setTimeout(()=> URL.revokeObjectURL(url), 1000);
 }
 
-/* ================== FINISHED ================== */
-async function loadFinished(){
-  try{ FINISHED = await cached("listFinished",{},30000); }catch{ FINISHED=[]; }
-  renderGenericTable("#thFin","#tbFin",FINISHED,["po_id","得意先","品名","品番","数量","完成日","検査","備考"]);
-  attachSearch("#finSearch","#tbFin");
-  setOnClick("#btnFinExport", ()=> exportTableCSV("#tbFin","finished.csv"));
-  setOnClick("#btnFinPrint",  ()=> window.print());
-}
-
-/* ================== INVENTORY ================== */
-async function loadInventory(){
-  try{ INVENTORY = await cached("listInventory",{},30000); }catch{ INVENTORY=[]; }
-  renderGenericTable("#thInv","#tbInv",INVENTORY,["品番","ロット","在庫数","場所","更新日"]);
-  attachSearch("#invSearch","#tbInv");
-  setOnClick("#btnInvExport", ()=> exportTableCSV("#tbInv","inventory.csv"));
-  setOnClick("#btnInvPrint",  ()=> window.print());
-}
-
-/* ================== GENERIC TABLE RENDERER ================== */
-function renderGenericTable(thSel, tbSel, rows, cols){
-  const th = $(thSel), tb = $(tbSel);
-  if(!th || !tb) return;
-  th.innerHTML = "<tr>" + cols.map(c=>`<th>${c}</th>`).join("") + "</tr>";
-  tb.innerHTML = "";
-  const chunk = 200; let i = 0;
-  (function paint(){
-    const end = Math.min(i+chunk, rows.length);
-    const frag = document.createDocumentFragment();
-    for(; i<end; i++){
-      const r = rows[i]||{};
-      const tr = document.createElement("tr");
-      tr.innerHTML = cols.map(c=>`<td>${escapeHTML(r[c])}</td>`).join("");
-      frag.appendChild(tr);
+function handleImport(e, type){
+  const file=e.target.files[0]; if(!file) return;
+  const reader=new FileReader();
+  reader.onload = async (ev)=>{
+    const data = ev.target.result;
+    let rows=[];
+    if(file.name.endsWith('.csv')){
+      const lines = data.split(/\r?\n/).filter(Boolean);
+      const head = lines.shift().split(',').map(h=> h.replace(/^"|"$/g,''));
+      rows = lines.map(line=>{
+        const cols = line.match(/(".*?"|[^",\s]+)(?=\s*,|\s*$)/g).map(x=> x.replace(/^"|"$/g,''));
+        const o={}; head.forEach((h,i)=> o[h]=cols[i]); return o;
+      });
+    }else{
+      const wb = XLSX.read(data, {type:'binary'});
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      rows = XLSX.utils.sheet_to_json(ws);
     }
-    tb.appendChild(frag);
-    if(i < rows.length) requestIdleCallback(paint);
-  })();
-}
-function attachSearch(inputSel, tbSel){
-  const input = $(inputSel), tb = $(tbSel);
-  if(!input || !tb) return;
-  input.oninput = debounce(()=>{
-    const q = (input.value||"").toLowerCase().trim();
-    $$("tr", tb).forEach(tr=>{
-      const t = tr.textContent.toLowerCase();
-      tr.style.display = (!q || t.includes(q)) ? "" : "none";
-    });
-  }, 200);
-}
-
-/* ================== INVOICE ================== */
-async function initInvoicePage(){
-  if(!(MASTERS.customers && MASTERS.customers.length)){ try{ await loadMasters(); }catch{} }
-  const sel = $("#invoiceCustomer");
-  if(sel) sel.innerHTML = `<option value="">(得意先を選択)</option>` + (MASTERS.customers||[]).map(c=>`<option>${c}</option>`).join("");
-  try{ INVOICES = await cached("listInvoices",{},15000); }catch{ INVOICES=[]; }
-  renderInvoicesList();
-  setOnClick("#btnInvoiceReload", buildInvoiceCandidates);
-  setOnClick("#btnInvoiceSave",   saveInvoice);
-  setOnClick("#btnInvoicePdf",    ()=> alert("PDF出力は端末の印刷機能をご利用ください（またはバックエンド実装が必要）"));
-  setOnClick("#btnInvoiceXlsx",   ()=> exportTableCSV("#tbInvoiceCandidates","invoice_candidates.csv"));
-}
-function renderInvoicesList(){
-  const tb = $("#tbInvoiceList"); if(!tb) return;
-  tb.innerHTML = "";
-  INVOICES.forEach(r=>{
-    const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${r.invoice_no||''}</td><td>${r['得意先']||''}</td><td>${r['発行日']||''}</td><td>${r['合計']||0}</td><td>${r['ファイル名']||''}</td><td>${r['作成者']||''}</td>`;
-    tb.appendChild(tr);
-  });
-}
-async function buildInvoiceCandidates(){
-  const cust = $("#invoiceCustomer") ? $("#invoiceCustomer").value : "";
-  const date = $("#invoiceDate") ? $("#invoiceDate").value : "";
-  const tbCand = $("#tbInvoiceCandidates");
-  const tbStat = $("#tbInvoiceStatus");
-  if(!tbCand || !tbStat) return;
-  tbCand.innerHTML = ""; tbStat.innerHTML = "";
-  if(!SHIPS.length){ try{ SHIPS = await cached("listShip",{},30000); }catch{ SHIPS=[]; } }
-
-  const rows = SHIPS.filter(r=>{
-    const matchCust = !cust || String(r["得意先"]||r["納入先"]||"") === cust;
-    const matchDate = !date || String(r["出荷日"]||r["出荷予定日"]||"").startsWith(date);
-    return matchCust && matchDate;
-  });
-  rows.forEach(r=>{
-    const tr = document.createElement("tr");
-    const qty = Number(r["数量"]||0), price = Number(r["単価"]||0), total = (qty*price)||0;
-    tr.innerHTML = `
-      <td><input type="checkbox" class="cand-chk" data-po="${escapeHTML(r["po_id"]||'')}" data-name="${escapeHTML(r["品名"]||'')}" data-part="${escapeHTML(r["品番"]||'')}" data-qty="${qty}" data-price="${price}" data-date="${escapeHTML(r["出荷日"]||r["出荷予定日"]||'')}"></td>
-      <td>${r["po_id"]||''}</td>
-      <td>${r["品名"]||''}</td>
-      <td>${r["品番"]||''}</td>
-      <td>${qty}</td>
-      <td>${price}</td>
-      <td>${total}</td>
-      <td>${r["出荷日"]||r["出荷予定日"]||''}</td>`;
-    tbCand.appendChild(tr);
-  });
-  const allRows = SHIPS.filter(r=> !cust || (String(r["得意先"]||r["納入先"]||"") === cust));
-  allRows.forEach(r=>{
-    const tr = document.createElement("tr");
-    const qty = Number(r["数量"]||0), price = Number(r["単価"]||0), total = (qty*price)||0;
-    tr.innerHTML = `
-      <td>${r["po_id"]||''}</td>
-      <td>${r["品名"]||''}</td>
-      <td>${r["品番"]||''}</td>
-      <td>${qty}</td>
-      <td>${price}</td>
-      <td>${total}</td>
-      <td>${r["出荷日"]||r["出荷予定日"]||''}</td>
-      <td>${r["状態"]||''}</td>`;
-    tbStat.appendChild(tr);
-  });
-}
-async function saveInvoice(){
-  const cust = $("#invoiceCustomer") ? $("#invoiceCustomer").value : "";
-  const date = ($("#invoiceDate") && $("#invoiceDate").value) || new Date().toISOString().slice(0,10);
-  const chks = $$(".cand-chk:checked");
-  if(!cust){ alert("得意先を選択してください"); return; }
-  if(!chks.length){ alert("候補を選択してください"); return; }
-  const items = [].slice.call(chks).map(c=>({
-    po_id: c.dataset.po, 商品名: c.dataset.name, 品番: c.dataset.part,
-    数量: Number(c.dataset.qty||0), 単価:Number(c.dataset.price||0),
-    金額: Number(c.dataset.qty||0) * Number(c.dataset.price||0),
-    出荷日: c.dataset.date || ""
-  }));
-  const total = items.reduce((s,it)=> s + Number(it.金額||0), 0);
-  try{
-    const res = await jsonp("saveInvoice", {
-      customer: cust, date, total, filename: `INV_${cust}_${date}.pdf`,
-      user: JSON.stringify(CURRENT_USER||{}), items: JSON.stringify(items)
-    });
-    alert(`請求書を保存しました: ${res.invoice_no}`);
-    INVOICES = await cached("listInvoices",{},0);
-    renderInvoicesList();
-  }catch(e){
-    alert("請求書保存に失敗: " + (e && e.message ? e.message : e));
-  }
-}
-
-/* ================== ANALYTICS (Chart.js) ================== */
-function destroyChart(id){ if(CHARTS[id]){ try{ CHARTS[id].destroy(); }catch{}; delete CHARTS[id]; } }
-async function initCharts(){
-  if(!ORDERS.length){ await loadOrders(); }
-  const byMonth = {};
-  ORDERS.forEach(r=>{
-    const d = (r.updated_at||"").slice(0,7) || "—";
-    if(!byMonth[d]) byMonth[d] = { ok:0, ng:0 };
-    byMonth[d].ok += Number(r.ok_count||0);
-    byMonth[d].ng += Number(r.ng_count||0);
-  });
-  const labels = Object.keys(byMonth).sort();
-  const ok = labels.map(m=> byMonth[m].ok);
-  const ng = labels.map(m=> byMonth[m].ng);
-
-  let canvas = $("#analyticsChart");
-  if(!canvas){
-    const sec = document.createElement("section");
-    sec.innerHTML = `<div class="card"><h3 style="margin:0 0 10px">OK / NG 推移</h3><canvas id="analyticsChart" height="120"></canvas></div>`;
-    const pa=$("#pageAnalytics"); if(pa) pa.appendChild(sec);
-    canvas = $("#analyticsChart");
-  }
-  destroyChart("main");
-  if(typeof Chart!=="undefined"){
-    CHARTS.main = new Chart(canvas.getContext("2d"), {
-      type: "line",
-      data: { labels, datasets:[
-        { label:"OK", data: ok, tension:.3 },
-        { label:"NG", data: ng, tension:.3 }
-      ]},
-      options:{
-        responsive:true,
-        plugins:{ legend:{ position:"bottom" } },
-        interaction:{ mode:"index", intersect:false },
-        scales:{ x:{ title:{display:true, text:"月"} }, y:{ beginAtZero:true } }
-      }
-    });
-  }
-}
-
-/* ================== MASTERS ================== */
-async function loadMasters(){ try{ MASTERS = await cached("listMasters", {}, 60000); }catch{} }
-
-/* ================== QR / OP DIALOGS ================== */
-function openStationQrSheet(){ alert("工程QR シートを開きます（実環境のスプレッドシートURLにリンクしてください）"); }
-let scanStream=null, scanRAF=null;
-function openScanDialog(po){
-  const res=$("#scanResult"); if(res) res.textContent = po ? `注番: ${po}` : "—";
-  const dlg=$("#dlgScan"); if(dlg) dlg.showModal();
-}
-setOnClick("#btnScanClose", ()=> { stopScan(); const d=$("#dlgScan"); if(d) d.close(); });
-setOnClick("#btnScanStart", async ()=>{
-  try{
-    stopScan();
-    const video=$("#scanVideo"), canvas=$("#scanCanvas");
-    if(!video || !canvas) return;
-    const ctx=canvas.getContext("2d");
-    scanStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"}});
-    video.srcObject = scanStream; await video.play();
-    const loop = ()=>{
-      if(!scanStream) return;
-      const w = video.videoWidth, h = video.videoHeight;
-      if(w && h){
-        canvas.width = w; canvas.height = h;
-        ctx.drawImage(video, 0, 0, w, h);
-        const img = ctx.getImageData(0,0,w,h);
-        const code = (typeof jsQR==="function") ? jsQR(img.data, w, h) : null;
-        if(code && code.data){ const rr=$("#scanResult"); if(rr) rr.textContent = "QR: " + code.data; }
-      }
-      scanRAF = requestAnimationFrame(loop);
-    };
-    loop();
-  }catch(e){ alert("カメラ起動に失敗: " + (e && e.message ? e.message : e)); }
-});
-function stopScan(){
-  try{ if(scanRAF) cancelAnimationFrame(scanRAF); }catch{}
-  scanRAF=null;
-  try{ if(scanStream && scanStream.getTracks) scanStream.getTracks().forEach(t=> t.stop()); }catch{}
-  scanStream=null;
-}
-function openOpDialog(po){
-  const opPO=$("#opPO"); if(opPO) opPO.textContent = po || "—";
-  const ok=$("#opOK"); if(ok) ok.value=0;
-  const ng=$("#opNG"); if(ng) ng.value=0;
-  const note=$("#opNote"); if(note) note.value="";
-  const sel=$("#opProcess");
-  if(sel) sel.innerHTML = ["切断","レザー加工","曲げ","外注加工/組立","検査","出荷準備","出荷済"].map(x=>`<option>${x}</option>`).join("");
-  const dlg=$("#dlgOp"); if(dlg) dlg.showModal();
-}
-setOnClick("#btnOpCancel", ()=> { const d=$("#dlgOp"); if(d) d.close(); });
-setOnClick("#btnOpSave", async ()=>{
-  const payload = {
-    po_id: ($("#opPO") && $("#opPO").textContent) || "",
-    process: ($("#opProcess") && $("#opProcess").value) || "",
-    ok: Number(($("#opOK") && $("#opOK").value) || 0),
-    ng: Number(($("#opNG") && $("#opNG").value) || 0),
-    note: (($("#opNote") && $("#opNote").value) || ''),
-    user: JSON.stringify(CURRENT_USER||{})
-  };
-  try{
-    await jsonp("saveOp", payload);
-    alert("保存しました");
-    const dlg=$("#dlgOp"); if(dlg) dlg.close();
-    await refreshAll();
-  }catch(e){ alert("保存失敗: " + (e && e.message ? e.message : e)); }
-});
-
-/* ================== ADMIN: ADD MEMBER ================== */
-function openAddUser(){
-  const dlg=$("#dlgAddUser"); if(dlg) dlg.showModal();
-  setOnClick("#btnAddUserSave", async ()=>{
-    const username = ($("#auUser") && $("#auUser").value.trim()) || "";
-    const password = ($("#auPass") && $("#auPass").value.trim()) || "";
-    const role     = ($("#auRole") && $("#auRole").value) || "";
-    const department = ($("#auDept") && $("#auDept").value.trim()) || "";
-    const full_name  = ($("#auName") && $("#auName").value.trim()) || "";
-    if(!username || !password) return alert("Username dan Password wajib.");
     try{
-      await jsonp("addMember", { data: JSON.stringify({ username, password, role, department, full_name }), user: JSON.stringify(CURRENT_USER||{}) });
-      alert("Member berhasil ditambahkan");
-      const d=$("#dlgAddUser"); if(d) d.close();
-      if($("#auUser")) $("#auUser").value="";
-      if($("#auPass")) $("#auPass").value="";
-      if($("#auDept")) $("#auDept").value="";
-      if($("#auName")) $("#auName").value="";
-    }catch(e){ alert("Gagal menambahkan member: " + (e && e.message ? e.message : e)); }
-  });
-  setOnClick("#btnAddUserCancel", ()=> { const d=$("#dlgAddUser"); if(d) d.close(); });
+      if(type==='sales') await apiPost('importSales',{rows,user:SESSION,mode:'upsert'});
+      if(type==='orders') await apiPost('importOrders',{rows,user:SESSION,mode:'upsert'});
+      if(type==='ship') await apiPost('importShipments',{rows,user:SESSION,mode:'upsert'});
+      alert('インポート成功'); refreshAll(true);
+    }catch(err){ showApiError('import-'+type, err); }
+  };
+  if(file.name.endsWith('.csv')) reader.readAsText(file);
+  else reader.readAsBinaryString(file);
 }
-setOnClick("#btnAddMember", openAddUser);
-
-/* ================== WEATHER (dummy) ================== */
-async function ensureWeather(){
-  const t=$("#wxTemp");  if(t) t.textContent="20℃";
-  const w=$("#wxWind");  if(w) w.textContent="6 m/s";
-  const p=$("#wxPlace"); if(p) p.textContent="GMT+9";
-}
-
-/* ================== FORM DIALOG (Generic) ================== */
-function openFormDialog(title, fields, onSave){
-  const ttl=$("#dlgTitle"); if(ttl) ttl.textContent = title;
-  const form=$("#formBody"); if(!form) return;
-  form.innerHTML = fields.map(f=>`
-    <div class="form-item">
-      <label>${f.label}</label>
-      <input id="f_${f.key}" value="${escapeHTML(f.value||'')}">
-    </div>
-  `).join("");
-  setOnClick("#btnDlgSave", async ()=>{
-    const data = {};
-    fields.forEach(f=> { const el=$("#f_"+f.key); data[f.key] = el? el.value : ""; });
-    try{ await onSave(data); const d=$("#dlgForm"); if(d) d.close(); }catch(e){ alert(e && e.message ? e.message : e); }
-  });
-  setOnClick("#btnDlgCancel", ()=> { const d=$("#dlgForm"); if(d) d.close(); });
-  const d=$("#dlgForm"); if(d) d.showModal();
-}
-
-/* ================== UTILS ================== */
-function debounce(fn, wait=250){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), wait); }; }
-function exportTableCSV(tbodySel, filename="export.csv"){
-  const tb=$(tbodySel); if(!tb) return;
-  const rows=[];
-  const table = tb.closest("table");
-  const ths = $$("thead th", table).map(th => wrapCSV(th.textContent.trim()));
-  if(ths.length) rows.push(ths.join(","));
-  $$("tr", tb).forEach(tr=>{
-    const cols = $$("td,th", tr).map(td => wrapCSV(td.textContent||""));
-    rows.push(cols.join(","));
-  });
-  const blob = new Blob([rows.join("\n")], {type:"text/csv;charset=utf-8;"});
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(a.href);
-}
-function wrapCSV(s){ s = (s||"").replace(/\r?\n/g," ").replace(/"/g,'""'); return `"${s}"`; }
-function escapeHTML(s){ return String(s==null?"":s).replace(/[&<>"']/g, m=>({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[m])); }
-
-/* ================== INIT ================== */
-document.addEventListener("DOMContentLoaded", ()=>{
-  console.log("[TSH] app.js loaded");
-  setUser(null);                   // tampilkan halaman login
-  setOnClick("#btnStationQR", openStationQrSheet);
-});
