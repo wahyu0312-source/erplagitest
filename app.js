@@ -1,9 +1,17 @@
 /* =========================================================
- * app.js — Tokyo Seimitsu ERP (Frontend) — MAX Edition
+ * app.js — Tokyo Seimitsu ERP (Frontend) — MAX Edition (SAFE)
+ * - tanpa optional chaining (?.)
+ * - ada bootstrap agar #authView muncul default
  * ========================================================= */
 
+/* ===== Bootstrap agar tidak blank ===== */
+document.addEventListener('DOMContentLoaded', function(){
+  var av = document.getElementById('authView');
+  if (av) { av.classList.remove('hidden'); av.style.removeProperty('display'); }
+});
+
 /* ===== Config ===== */
-const API_BASE = "https://script.google.com/macros/s/AKfycbxhRDN1AckQ9B9FvE8DnA46ueOF0tXjKvpK5PlI6uQIEk0PgpL9VOLMDHO7XpIDArEFYw/exec"; // WAJIB: URL doGet/doPost Apps Script
+const API_BASE = "https://script.google.com/macros/s/AKfycbxhRDN1AckQ9B9FvE8DnA46ueOF0tXjKvpK5PlI6uQIEk0PgpL9VOLMDHO7XpIDArEFYw/exec"; // WAJIB
 const API_KEY = ""; // optional
 
 const PROCESSES = [
@@ -14,7 +22,7 @@ const PROCESSES = [
 /* ===== Station toggle rules ===== */
 const STATION_RULES = {
   'レーザ加工': (o)=> ({ current_process:'レーザ加工' }),
-  '曲げ工程': (o)=> ({ current_process:'曲げ加工' }), // alias
+  '曲げ工程': (o)=> ({ current_process:'曲げ加工' }),
   '曲げ加工': (o)=> ({ current_process:'曲げ加工' }),
   '外枠組立': (o)=> ({ current_process:'外枠組立' }),
   'シャッター組立': (o)=> ({ current_process:'シャッター組立' }),
@@ -22,27 +30,23 @@ const STATION_RULES = {
   'コーキング': (o)=> ({ current_process:'コーキング' }),
   '外枠塗装': (o)=> ({ current_process:'外枠塗装' }),
   '組立工程': (o)=> (o.current_process==='組立（組立中）' ? { current_process:'組立（組立済）' } : { current_process:'組立（組立中）' }),
-  '検査工程': (o)=> (o.current_process==='検査工程' && !['検査保留','不良品（要リペア）','検査済'].includes(o.status) ? { current_process:'検査工程', status:'検査済' } : { current_process:'検査工程' }),
-  '出荷工程': (o)=> (o.status==='出荷準備' ? { current_process:o.current_process||'検査工程', status:'出荷済' } : { current_process:'検査工程', status:'出荷準備' })
+  '検査工程': (o)=> (o.current_process==='検査工程' && ['検査保留','不良品（要リペア）','検査済'].indexOf(o.status)<0 ? { current_process:'検査工程', status:'検査済' } : { current_process:'検査工程' }),
+  '出荷工程': (o)=> (o.status==='出荷準備' ? { current_process:(o.current_process||'検査工程'), status:'出荷済' } : { current_process:'検査工程', status:'出荷準備' })
 };
 
 /* ===== Shortcuts ===== */
 const $ = (s)=> document.querySelector(s);
 const fmtDT= (s)=> s? new Date(s).toLocaleString(): '';
 const fmtD = (s)=> s? new Date(s).toLocaleDateString(): '';
-let SESSION=null, CURRENT_PO=null, scanStream=null, scanTimer=null;
-let INV_PREVIEW={info:null, lines:[]};
-let chartsLoaded=false;
 
-/* ===== Visual mapping (badge) ===== */
+var SESSION=null, CURRENT_PO=null, scanStream=null, scanTimer=null;
+var INV_PREVIEW={info:null, lines:[], inv_id:null};
+var chartsLoaded=false;
+
+/* ===== Visual mapping ===== */
 const STATUS_CLASS = {
-  '生産開始':'st-begin',
-  '検査工程':'st-inspect',
-  '検査済':'st-inspect',
-  '検査保留':'st-hold',
-  '出荷準備':'st-ready',
-  '出荷済':'st-shipped',
-  '不良品（要リペア）':'st-ng'
+  '生産開始':'st-begin','検査工程':'st-inspect','検査済':'st-inspect',
+  '検査保留':'st-hold','出荷準備':'st-ready','出荷済':'st-shipped','不良品（要リペア）':'st-ng'
 };
 const PROC_CLASS = {
   'レーザ加工':'prc-laser','曲げ加工':'prc-bend','外枠組立':'prc-frame','シャッター組立':'prc-shassy',
@@ -50,10 +54,10 @@ const PROC_CLASS = {
   '組立（組立中）':'prc-asm-in','組立（組立済）':'prc-asm-ok','外注':'prc-out','検査工程':'prc-inspect'
 };
 
-/* ===== Service Worker register (fallback) ===== */
+/* ===== Service Worker (optional) ===== */
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', ()=>{
-    navigator.serviceWorker.getRegistration().then(reg=>{
+  window.addEventListener('load', function(){
+    navigator.serviceWorker.getRegistration().then(function(reg){
       if(!reg){ navigator.serviceWorker.register('./sw.js').catch(console.warn); }
     });
   });
@@ -61,22 +65,17 @@ if ('serviceWorker' in navigator) {
 
 /* ===== SWR Cache (localStorage) ===== */
 const SWR = {
-  get(key){ try{ const x=localStorage.getItem(key); return x? JSON.parse(x):null;}catch(e){return null;} },
-  set(key,val){ try{ localStorage.setItem(key, JSON.stringify(val)); }catch(e){} },
+  get: function(key){ try{ var x=localStorage.getItem(key); return x? JSON.parse(x):null;}catch(e){return null;} },
+  set: function(key,val){ try{ localStorage.setItem(key, JSON.stringify(val)); }catch(e){} },
 };
 
-/* ===== API helpers (robust) ===== */
+/* ===== API helpers ===== */
 async function apiPost(action, body){
-  const payload={action,...body};
+  const payload={action:action, ...body};
   if(API_KEY) payload.apiKey=API_KEY;
   let res, txt;
   try{
-    res = await fetch(API_BASE,{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify(payload),
-      cache:'no-store'
-    });
+    res = await fetch(API_BASE,{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload), cache:'no-store' });
     txt = await res.text();
   }catch(netErr){ throw new Error('Network error: '+(netErr.message||netErr)); }
   try{
@@ -84,21 +83,26 @@ async function apiPost(action, body){
     if(!j.ok) throw new Error(j.error||'API error');
     return j.data;
   }catch(parseErr){
-    console.error('API RAW RESPONSE (POST '+action+'):\n', txt);
+    console.error('API RAW (POST '+action+'):\n', txt);
     throw new Error('Invalid response (cek deploy/izin API_BASE).');
   }
 }
-async function apiGet(params, {swrKey=null, revalidate=true} = {}){
+async function apiGet(params, opt){
+  opt = opt || {};
+  const swrKey = opt.swrKey || null;
+  const revalidate = (typeof opt.revalidate==='boolean') ? opt.revalidate : true;
+
   const url=API_BASE+'?'+new URLSearchParams(params).toString();
   const key = swrKey || ('GET:'+url);
   const cached = SWR.get(key);
+
   if (cached && revalidate){
-    fetch(url,{cache:'no-store'}).then(r=>r.text()).then(txt=>{
+    fetch(url,{cache:'no-store'}).then(function(r){ return r.text(); }).then(function(txt){
       try{
         const j=JSON.parse(txt);
-        if(j.ok){ SWR.set(key, j.data); document.dispatchEvent(new CustomEvent('swr:update',{detail:{key}})); }
+        if(j.ok){ SWR.set(key, j.data); document.dispatchEvent(new CustomEvent('swr:update',{detail:{key:key}})); }
       }catch(_){}
-    }).catch(()=>{});
+    }).catch(function(){});
     return cached;
   }
   let res, txt;
@@ -110,22 +114,161 @@ async function apiGet(params, {swrKey=null, revalidate=true} = {}){
     SWR.set(key, j.data);
     return j.data;
   }catch(parseErr){
-    console.error('API RAW RESPONSE (GET):\n', txt);
+    console.error('API RAW (GET):\n', txt);
     if(cached) return cached;
     throw new Error('Invalid response (cek deploy/izin API_BASE).');
   }
 }
 function showApiError(action, err){
   console.error('API FAIL:', action, err);
-  let bar=document.getElementById('errbar');
+  var bar=document.getElementById('errbar');
   if(!bar){
     bar=document.createElement('div');
     bar.id='errbar';
     bar.style.cssText='position:fixed;left:12px;right:12px;bottom:12px;background:#fee;border:1px solid #f99;color:#900;padding:10px;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,.08);z-index:9999';
     document.body.appendChild(bar);
   }
-  bar.innerHTML=`<b>APIエラー</b> <code>${action||'-'}</code> — ${err.message||err}`;
+  bar.innerHTML='<b>APIエラー</b> <code>'+(action||'-')+'</code> — '+(err.message||err);
 }
+
+/* ===== Skeleton helpers ===== */
+function tableSkeleton(tbody, rows, cols){
+  rows = rows||7; cols=cols||8;
+  if(!tbody) return;
+  var frag=document.createDocumentFragment();
+  for(var i=0;i<rows;i++){
+    var tr=document.createElement('tr');
+    for(var c=0;c<cols;c++){
+      var td=document.createElement('td');
+      td.innerHTML='<div class="shimmer" style="height:14px;border-radius:6px"></div>';
+      tr.appendChild(td);
+    }
+    frag.appendChild(tr);
+  }
+  tbody.innerHTML='';
+  tbody.appendChild(frag);
+}
+function clearSkeleton(tbody){ if(tbody) tbody.innerHTML=''; }
+
+/* ===== Boot ===== */
+window.addEventListener('DOMContentLoaded', function(){
+  ['btnToDash','btnToSales','btnToPlan','btnToShip','btnToInvPage','btnToFinPage','btnToInvoice','btnToCharts']
+    .forEach(function(id){
+      var el=document.getElementById(id);
+      if(!el) return;
+      var map={
+        btnToDash: function(){ show('pageDash'); },
+        btnToSales: function(){ show('pageSales'); },
+        btnToPlan: function(){ show('pagePlan'); },
+        btnToShip: function(){ show('pageShip'); },
+        btnToInvPage: function(){ show('pageInventory'); renderInventory(); },
+        btnToFinPage: function(){ show('pageFinished'); renderFinished(); },
+        btnToInvoice: function(){ show('pageInvoice'); },
+        btnToCharts: function(){ show('pageCharts'); ensureChartsLoaded(); }
+      };
+      el.onclick = map[id];
+    });
+
+  var miStationQR = document.getElementById('miStationQR');
+  var miAddUser = document.getElementById('miAddUser');
+  var miChangePass = document.getElementById('miChangePass');
+  var btnLogoutMenu = document.getElementById('btnLogout');
+  if(miStationQR) miStationQR.onclick = openStationQR;
+  if(miAddUser) miAddUser.onclick = openAddUserModal;
+  if(miChangePass) miChangePass.onclick = changePasswordUI;
+  if(btnLogoutMenu) btnLogoutMenu.onclick= function(){ SESSION=null; localStorage.removeItem('erp_session'); location.reload(); };
+
+  var btnLogin = document.getElementById('btnLogin');
+  var btnNewUser = document.getElementById('btnNewUser');
+  if(btnLogin) btnLogin.onclick = onLogin;
+  if(btnNewUser) btnNewUser.onclick = addUserFromLoginUI;
+
+  var btnRefresh = document.getElementById('btnRefresh');
+  var searchQ = document.getElementById('searchQ');
+  var btnExportOrders = document.getElementById('btnExportOrders');
+  var btnExportShip = document.getElementById('btnExportShip');
+  if(btnRefresh) btnRefresh.onclick = refreshAll;
+  if(searchQ) searchQ.addEventListener('input', debounce(renderOrders, 200));
+  if(btnExportOrders) btnExportOrders.onclick = exportOrdersCSV;
+  if(btnExportShip) btnExportShip.onclick = exportShipCSV;
+
+  var btnSalesSave = document.getElementById('btnSalesSave');
+  var btnSalesDelete = document.getElementById('btnSalesDelete');
+  var btnSalesExport = document.getElementById('btnSalesExport');
+  var btnPromote = document.getElementById('btnPromote');
+  var salesQ = document.getElementById('salesQ');
+  var btnSalesImport = document.getElementById('btnSalesImport');
+  var fileSales = document.getElementById('fileSales');
+  if(btnSalesSave) btnSalesSave.onclick = saveSalesUI;
+  if(btnSalesDelete) btnSalesDelete.onclick = deleteSalesUI;
+  if(btnSalesExport) btnSalesExport.onclick = exportSalesCSV;
+  if(btnPromote) btnPromote.onclick = promoteSalesUI;
+  if(salesQ) salesQ.addEventListener('input', debounce(renderSales, 200));
+  if(btnSalesImport) btnSalesImport.onclick = function(){ if(fileSales) fileSales.click(); };
+  if(fileSales) fileSales.onchange = function(e){ handleImport(e, 'sales'); };
+
+  var btnCreateOrder = document.getElementById('btnCreateOrder');
+  var btnPlanExport = document.getElementById('btnPlanExport');
+  var btnPlanEdit = document.getElementById('btnPlanEdit');
+  var btnPlanDelete = document.getElementById('btnPlanDelete');
+  var btnPlanImport = document.getElementById('btnPlanImport');
+  var filePlan = document.getElementById('filePlan');
+  if(btnCreateOrder) btnCreateOrder.onclick = createOrderUI;
+  if(btnPlanExport) btnPlanExport.onclick = exportOrdersCSV;
+  if(btnPlanEdit) btnPlanEdit.onclick = loadOrderForEdit;
+  if(btnPlanDelete) btnPlanDelete.onclick = deleteOrderUI;
+  if(btnPlanImport) btnPlanImport.onclick = function(){ if(filePlan) filePlan.click(); };
+  if(filePlan) filePlan.onchange = function(e){ handleImport(e, 'orders'); };
+
+  var btnSchedule = document.getElementById('btnSchedule');
+  var btnShipExport = document.getElementById('btnShipExport');
+  var btnShipEdit = document.getElementById('btnShipEdit');
+  var btnShipDelete = document.getElementById('btnShipDelete');
+  var btnShipByPO = document.getElementById('btnShipByPO');
+  var btnShipByID = document.getElementById('btnShipByID');
+  var btnShipImport = document.getElementById('btnShipImport');
+  var fileShip = document.getElementById('fileShip');
+  if(btnSchedule) btnSchedule.onclick = scheduleUI;
+  if(btnShipExport) btnShipExport.onclick = exportShipCSV;
+  if(btnShipEdit) btnShipEdit.onclick = loadShipForEdit;
+  if(btnShipDelete) btnShipDelete.onclick = deleteShipUI;
+  if(btnShipByPO) btnShipByPO.onclick = function(){ var po=document.getElementById('s_po').value.trim(); if(!po){ alert('注番入力'); return; } openShipByPO(po); };
+  if(btnShipByID) btnShipByID.onclick = function(){ var id=prompt('Ship ID:'); if(!id) return; openShipByID(id.trim()); };
+  if(btnShipImport) btnShipImport.onclick = function(){ if(fileShip) fileShip.click(); };
+  if(fileShip) fileShip.onchange = function(e){ handleImport(e, 'ship'); };
+
+  var btnInvPreview = document.getElementById('btnInvPreview');
+  var btnInvCreate = document.getElementById('btnInvCreate');
+  var btnInvPrint = document.getElementById('btnInvPrint');
+  var btnInvCSV = document.getElementById('btnInvCSV');
+  if(btnInvPreview) btnInvPreview.onclick = previewInvoiceUI;
+  if(btnInvCreate) btnInvCreate.onclick = createInvoiceUI;
+  if(btnInvPrint) btnInvPrint.onclick = function(){ openInvoiceDoc(INV_PREVIEW.inv_id || ''); };
+  if(btnInvCSV) btnInvCSV.onclick = exportInvoiceCSV;
+
+  var btnChartsRefresh = document.getElementById('btnChartsRefresh');
+  fillChartYearSelector();
+  if(btnChartsRefresh) btnChartsRefresh.onclick = renderCharts;
+
+  var invQ = document.getElementById('invQ'); if(invQ) invQ.addEventListener('input', debounce(renderInventory, 200));
+  var finQ = document.getElementById('finQ'); if(finQ) finQ.addEventListener('input', debounce(renderFinished, 200));
+
+  document.addEventListener('keydown', onGlobalShortcut);
+
+  // HILANGKAN optional chaining di sini
+  document.addEventListener('swr:update', function(ev){
+    var k = ev && ev.detail ? ev.detail.key || '' : '';
+    if(k.indexOf('action=listOrders')>=0) { try{ renderOrders(); }catch(_){ } }
+    if(k.indexOf('action=listSales')>=0)  { try{ renderSales(); }catch(_){ } }
+  });
+
+  var saved=localStorage.getItem('erp_session');
+  if(saved){ try{ SESSION=JSON.parse(saved); }catch(_){} }
+  if(SESSION){ enter(); } else { show('authView'); }
+
+  var btnScanStart = document.getElementById('btnScanStart');
+  if (btnScanStart) btnScanStart.onclick = function(){ initScan(); };
+});
 
 /* ===== Skeleton helpers ===== */
 function tableSkeleton(tbody, rows=7, cols=8){
